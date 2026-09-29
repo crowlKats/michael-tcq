@@ -307,12 +307,6 @@ export function PollSetup({
           <RelativeTime timestamp={initial.requestedAt} className="text-xs text-stone-500 dark:text-stone-400" />
         </p>
       )}
-      {isApprove && (
-        <p className="text-sm text-stone-600 dark:text-stone-400 mb-3">
-          This is exactly what the participant proposed. Adjust anything you like, then approve to start the poll for
-          everyone.
-        </p>
-      )}
       {isRequest && !initial && (
         <p className="text-sm text-stone-600 dark:text-stone-400 mb-3">
           Set up the poll you'd like to run. A chair will see your request and can start it as-is — nothing happens
