@@ -287,7 +287,19 @@ export function PollSetup({
 
   return (
     <form onSubmit={handleSubmit} className="p-6">
-      <h3 className="text-lg font-semibold text-stone-800 dark:text-stone-200 mb-3">{heading}</h3>
+      {/* Header: title + close (✕). Cancel lives here, not in the footer,
+          so the footer's rightmost button is always the "continue" action. */}
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <h3 className="text-lg font-semibold text-stone-800 dark:text-stone-200">{heading}</h3>
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label="Close"
+          className="text-stone-600 dark:text-stone-300 hover:text-stone-800 dark:hover:text-stone-100 cursor-pointer text-lg leading-none -mr-1 -mt-0.5"
+        >
+          ✕
+        </button>
+      </div>
       {initial && (
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-stone-600 dark:text-stone-400 mb-3">
           Requested by
@@ -405,41 +417,36 @@ export function PollSetup({
         + Add Option
       </button>
 
-      {/* Submit / Cancel */}
-      <div className="flex gap-2 border-t border-stone-100 dark:border-stone-700 pt-3">
-        <button
-          type="submit"
-          disabled={validCount < 2 || submitDisabledReason !== undefined}
-          title={submitDisabledReason}
-          className="bg-teal-700 text-white px-4 py-1.5 rounded text-sm font-medium
-                     enabled:hover:bg-teal-800 transition-colors cursor-pointer
-                     disabled:opacity-50 disabled:cursor-not-allowed
-                     focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 dark:focus:ring-offset-stone-900"
-        >
-          {submitLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="text-sm text-stone-600 dark:text-stone-300 hover:text-stone-800 dark:hover:text-stone-100 transition-colors cursor-pointer"
-        >
-          Cancel
-        </button>
+      {/* Footer: destructive secondary action (if any) on the left, the
+          primary "continue" action furthest right. Any disabled-reason
+          note sits between them. */}
+      <div className="flex items-center gap-3 border-t border-stone-100 dark:border-stone-700 pt-3">
         {secondaryAction && (
           <button
             type="button"
             onClick={secondaryAction.onClick}
             disabled={secondaryAction.disabled}
-            className="ml-auto text-sm text-stone-600 dark:text-stone-300 enabled:hover:text-red-600 dark:enabled:hover:text-red-400 transition-colors cursor-pointer
+            className="text-sm text-stone-600 dark:text-stone-300 enabled:hover:text-red-600 dark:enabled:hover:text-red-400 transition-colors cursor-pointer
                        disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {secondaryAction.label}
           </button>
         )}
+        {submitDisabledReason && (
+          <p className="ml-auto text-xs text-right text-stone-500 dark:text-stone-400">{submitDisabledReason}</p>
+        )}
+        <button
+          type="submit"
+          disabled={validCount < 2 || submitDisabledReason !== undefined}
+          title={submitDisabledReason}
+          className={`${submitDisabledReason ? '' : 'ml-auto '}bg-teal-700 text-white px-4 py-1.5 rounded text-sm font-medium
+                     enabled:hover:bg-teal-800 transition-colors cursor-pointer
+                     disabled:opacity-50 disabled:cursor-not-allowed
+                     focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 dark:focus:ring-offset-stone-900`}
+        >
+          {submitLabel}
+        </button>
       </div>
-      {submitDisabledReason && (
-        <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">{submitDisabledReason}</p>
-      )}
     </form>
   );
 }

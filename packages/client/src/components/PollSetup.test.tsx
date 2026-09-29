@@ -137,12 +137,29 @@ describe('PollSetup', () => {
     expect(onStarted).toHaveBeenCalled();
   });
 
-  it('calls onCancel when Cancel is clicked', () => {
+  it('calls onCancel when the header ✕ (Close) is clicked, and has no footer Cancel', () => {
     const onCancel = vi.fn();
     renderSetup(null, onCancel);
 
-    fireEvent.click(screen.getByText('Cancel'));
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  it('puts the primary action last in the footer, after any secondary action', () => {
+    renderSetup(
+      null,
+      () => {},
+      () => {},
+      'approve',
+      {
+        initial: pendingRequest,
+        secondaryAction: { label: 'Dismiss request', onClick: () => {} },
+      },
+    );
+    const footer = screen.getByRole('button', { name: 'Approve & Start Poll' }).parentElement!;
+    const buttons = Array.from(footer.querySelectorAll('button')).map((b) => b.textContent);
+    expect(buttons).toEqual(['Dismiss request', 'Approve & Start Poll']);
   });
 
   it('disables Start button when fewer than 2 valid options', () => {

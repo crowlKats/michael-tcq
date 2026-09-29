@@ -44,9 +44,10 @@ test.describe('Poll Configuration', () => {
     await expect(multiSelectCheckbox).toBeVisible();
     await expect(multiSelectCheckbox).toBeChecked();
 
-    // Start Poll and Cancel buttons
+    // Start Poll (footer, rightmost) and the ✕ close in the header
     await expect(dialog.getByRole('button', { name: 'Start Poll' })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Close' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
   });
 
   test('the setup form shows the 6 default options with emoji and label', async ({ page }) => {
@@ -97,13 +98,13 @@ test.describe('Poll Configuration', () => {
     }
   });
 
-  test('"Cancel" closes the setup form without starting a poll', async ({ page }) => {
+  test('the ✕ close button dismisses the setup form without starting a poll', async ({ page }) => {
     await page.getByRole('button', { name: 'Create Poll' }).click();
 
     const dialog = page.getByRole('dialog', { name: 'Create poll' });
     await expect(dialog).toBeVisible();
 
-    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await dialog.getByRole('button', { name: 'Close' }).click();
 
     await expect(dialog).not.toBeVisible();
     // No active poll modal should appear
@@ -470,6 +471,13 @@ test.describe('Poll requests', () => {
       await expect(review.getByLabel('Poll topic')).toHaveValue('Temp check: ship it?');
       await expect(review.getByLabel('Option label')).toHaveCount(6);
       await expect(review.getByText(/bob/i).first()).toBeVisible();
+      // Footer order: destructive on the left, the primary "continue" action
+      // furthest right; Cancel is the ✕ in the header, not a footer button.
+      const footerButtons = review.locator('form > div:last-of-type button');
+      await expect(footerButtons.first()).toHaveText('Dismiss request');
+      await expect(footerButtons.last()).toHaveText('Approve & Start Poll');
+      await expect(review.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
+      await expect(review.getByRole('button', { name: 'Close' })).toBeVisible();
       // The chair may edit before approving.
       await review.getByLabel('Poll topic').fill('Temp check: ship it? (chair-edited)');
       await review.getByRole('button', { name: 'Approve & Start Poll' }).click();
