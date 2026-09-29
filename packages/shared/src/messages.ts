@@ -481,11 +481,23 @@ export type PollStartPayload = z.infer<typeof PollStartPayloadSchema>;
 export const PollRequestPayloadSchema = PollStartPayloadSchema;
 export type PollRequestPayload = z.infer<typeof PollRequestPayloadSchema>;
 
-/** Payload for approving or dismissing a pending poll request by ID. */
+/** Payload for dismissing (or withdrawing) a pending poll request by ID. */
 export const PollRequestIdPayloadSchema = z.object({
   id: z.string(),
 });
 export type PollRequestIdPayload = z.infer<typeof PollRequestIdPayloadSchema>;
+
+/**
+ * Payload for approving a pending poll request. The chair reviews the
+ * request in the poll setup form and may edit it before approving, so
+ * every `PollStartPayload` field is accepted as an optional override;
+ * anything omitted falls back to what the requester proposed. Overrides
+ * go through the same validation as `poll:start`.
+ */
+export const PollApproveRequestPayloadSchema = PollStartPayloadSchema.partial().extend({
+  id: z.string(),
+});
+export type PollApproveRequestPayload = z.infer<typeof PollApproveRequestPayloadSchema>;
 
 /**
  * Payload for toggling a poll reaction. References the option by its ID.
@@ -858,10 +870,12 @@ export interface ClientToServerEvents {
 
   /**
    * Approve a pending poll request (chair only): starts a poll with the
-   * request's options/topic/mode and removes the request. Rejected while
-   * another poll is already running.
+   * request's options/topic/mode — or the chair's edited versions, if any
+   * override fields are present — and removes the request. The poll is
+   * still attributed to the original requester. Rejected while another
+   * poll is already running.
    */
-  'poll:approveRequest': (payload: PollRequestIdPayload) => void;
+  'poll:approveRequest': (payload: PollApproveRequestPayload) => void;
 
   /**
    * Remove a pending poll request without starting it. Chairs can dismiss

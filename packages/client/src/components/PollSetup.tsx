@@ -7,8 +7,10 @@
  * In `mode: 'start'` submitting emits `poll:start` and the poll begins
  * immediately. In `mode: 'request'` the identical configuration is sent
  * as `poll:request` instead — it lands in the chairs' pending-requests
- * list and only becomes a poll once a chair approves it.
-
+ * list and only becomes a poll once a chair approves it. In
+ * `mode: 'approve'` the form is pre-filled from a pending request
+ * (`initial`) and submitting emits `poll:approveRequest` with the chair's
+ * (possibly edited) configuration.
  *
  * Each option has an emoji (entered via text input — users can use
  * their OS emoji picker: Cmd+Ctrl+Space on Mac, Win+. on Windows)
@@ -17,11 +19,14 @@
  * Defaults to the six standard options from the PRD.
  */
 
-import { useState, useCallback, type FormEvent } from 'react';
+import { useState, useCallback, useLayoutEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
 import { DEFAULT_POLL_OPTIONS } from '@tcq/shared';
 import EmojiPicker from '@emoji-mart/react';
 import emojiData from '@emoji-mart/data';
+import type { PollRequest, User } from '@tcq/shared';
 import { useSocket } from '../contexts/SocketContext.js';
+import { UserBadge } from './UserBadge.js';
+import { RelativeTime } from '../lib/RelativeTime.js';
 
 /** A draft option being configured before the poll starts. */
 interface DraftOption {
@@ -76,24 +81,105 @@ function randomEmoji(): string {
   return RANDOM_EMOJI_POOL[Math.floor(Math.random() * RANDOM_EMOJI_POOL.length)];
 }
 
+/**
+ * Single-line-looking text field that wraps and grows with its content
+ * instead of scrolling horizontally, so a long poll topic or option label
+ * is readable in full — which matters most when a chair is reviewing a
+ * participant's request before approving it. Newlines aren't part of a
+ * topic/label: Enter submits the surrounding form (like an <input>), and
+ * pasted line breaks are collapsed to spaces.
+ */
+function AutoGrowTextarea({
+  value,
+  onChange,
+  className = '',
+  ...rest
+}: Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange' | 'rows'> & {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    // jsdom reports 0 — leave the browser default height in that case.
+    if (el.scrollHeight > 0) el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      e.currentTarget.form?.requestSubmit();
+    }
+  }
+
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      value={value}
+      onChange={(e) => onChange(e.target.value.replace(/[\r\n]+/g, ' '))}
+      onKeyDown={handleKeyDown}
+      className={`resize-none overflow-hidden ${className}`}
+      {...rest}
+    />
+  );
+}
+
 interface PollSetupProps {
   /**
    * `'start'` (chairs): submit starts the poll. `'request'` (everyone
-   * else): submit proposes it for chair approval. Defaults to `'start'`.
+   * else): submit proposes it for chair approval. `'approve'` (chairs
+   * reviewing a pending request): submit starts the poll from the
+   * request, edits included. Defaults to `'start'`.
    */
-  mode?: 'start' | 'request';
+  mode?: 'start' | 'request' | 'approve';
+  /**
+   * A pending request to pre-fill the form from. Required in `'approve'`
+   * mode; in `'request'` mode it lets a requester revise their own
+   * pending request (re-submitting replaces it server-side).
+   */
+  initial?: PollRequest;
+  /** The `initial` request's author, shown in the header when known. */
+  requester?: User;
+  /**
+   * Disable the submit button with an explanation — e.g. while another
+   * poll is already running, so a request can't be approved on top of it.
+   */
+  submitDisabledReason?: string;
+  /**
+   * Optional destructive secondary action rendered next to Cancel —
+   * "Dismiss request" for a reviewing chair, "Withdraw" for the requester.
+   */
+  secondaryAction?: { label: string; onClick: () => void };
   onCancel: () => void;
-  /** Called after the form has emitted (poll started or request sent). */
+  /** Called after the form has emitted (poll started, request sent, or request approved). */
   onSubmitted: () => void;
 }
 
-export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupProps) {
+/** Turn a pending request's options into editable drafts. */
+function draftsFrom(request: PollRequest): DraftOption[] {
+  return request.options.map((opt) => ({ key: nextKey++, emoji: opt.emoji, label: opt.label }));
+}
+
+export function PollSetup({
+  mode = 'start',
+  initial,
+  requester,
+  submitDisabledReason,
+  secondaryAction,
+  onCancel,
+  onSubmitted,
+}: PollSetupProps) {
   const isRequest = mode === 'request';
+  const isApprove = mode === 'approve';
 
   const socket = useSocket();
-  const [topic, setTopic] = useState('');
-  const [multiSelect, setMultiSelect] = useState(true);
-  const [options, setOptions] = useState<DraftOption[]>(createDefaults);
+  const [topic, setTopic] = useState(initial?.topic ?? '');
+  const [multiSelect, setMultiSelect] = useState(initial?.multiSelect ?? true);
+  const [options, setOptions] = useState<DraftOption[]>(() => (initial ? draftsFrom(initial) : createDefaults()));
+
   /** Key of the option whose emoji picker is open, or null if none. */
   const [pickerOpenFor, setPickerOpenFor] = useState<number | null>(null);
   /** Position for the emoji picker popover (fixed positioning). */
@@ -150,9 +236,12 @@ export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupPr
         label: opt.label.trim(),
       })),
     };
-    // Same payload shape either way — a request is a poll that hasn't
-    // been approved yet.
-    if (isRequest) {
+    // Same payload shape in every mode — a request is a poll that hasn't
+    // been approved yet, and approving sends the reviewed configuration
+    // back so any chair edits are what actually runs.
+    if (isApprove && initial) {
+      socket?.emit('poll:approveRequest', { id: initial.id, ...payload });
+    } else if (isRequest) {
       socket?.emit('poll:request', payload);
     } else {
       socket?.emit('poll:start', payload);
@@ -161,15 +250,41 @@ export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupPr
     onSubmitted();
   }
 
+  const heading = isApprove
+    ? 'Review Poll Request'
+    : isRequest
+      ? initial
+        ? 'Edit Poll Request'
+        : 'Request Poll'
+      : 'Create Poll';
+  const submitLabel = isApprove
+    ? 'Approve & Start Poll'
+    : isRequest
+      ? initial
+        ? 'Update Request'
+        : 'Request Poll'
+      : 'Start Poll';
+
   // Count valid options for the minimum-2 check
   const validCount = options.filter((opt) => opt.emoji.trim() && opt.label.trim()).length;
 
   return (
     <form onSubmit={handleSubmit} className="p-6">
-      <h3 className="text-lg font-semibold text-stone-800 dark:text-stone-200 mb-3">
-        {isRequest ? 'Request Poll' : 'Create Poll'}
-      </h3>
-      {isRequest && (
+      <h3 className="text-lg font-semibold text-stone-800 dark:text-stone-200 mb-3">{heading}</h3>
+      {initial && (
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-stone-600 dark:text-stone-400 mb-3">
+          Requested by
+          <UserBadge user={requester} size={18} className="text-stone-800 dark:text-stone-200" />
+          <RelativeTime timestamp={initial.requestedAt} className="text-xs text-stone-500 dark:text-stone-400" />
+        </p>
+      )}
+      {isApprove && (
+        <p className="text-sm text-stone-600 dark:text-stone-400 mb-3">
+          This is exactly what the participant proposed. Adjust anything you like, then approve to start the poll for
+          everyone.
+        </p>
+      )}
+      {isRequest && !initial && (
         <p className="text-sm text-stone-600 dark:text-stone-400 mb-3">
           Set up the poll you'd like to run. A chair will see your request and can start it as-is — nothing happens
           until they approve it.
@@ -177,13 +292,12 @@ export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupPr
       )}
 
       {/* Poll topic (optional) */}
-      <input
-        type="text"
+      <AutoGrowTextarea
         value={topic}
-        onChange={(e) => setTopic(e.target.value)}
+        onChange={setTopic}
         placeholder="Poll topic (optional)"
         aria-label="Poll topic"
-        className="w-full border border-stone-300 dark:border-stone-600 rounded px-2 py-1 text-sm mb-3
+        className="block w-full border border-stone-300 dark:border-stone-600 rounded px-2 py-1 text-sm mb-3
                    dark:bg-stone-700 dark:text-stone-100
                    focus:outline-none focus:ring-1 focus:ring-teal-500"
       />
@@ -197,7 +311,7 @@ export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupPr
       {/* Option list */}
       <div className="space-y-2 mb-3">
         {options.map((opt) => (
-          <div key={opt.key} className="flex items-center gap-2 relative">
+          <div key={opt.key} className="flex items-start gap-2 relative">
             {/* Emoji picker button */}
             <button
               type="button"
@@ -240,13 +354,12 @@ export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupPr
             )}
 
             {/* Label input */}
-            <input
-              type="text"
+            <AutoGrowTextarea
               value={opt.label}
-              onChange={(e) => updateOption(opt.key, 'label', e.target.value)}
+              onChange={(value) => updateOption(opt.key, 'label', value)}
               placeholder="Label"
               aria-label="Option label"
-              className="border border-stone-300 dark:border-stone-600 rounded px-2 py-1 text-sm flex-1
+              className="border border-stone-300 dark:border-stone-600 rounded px-2 py-1 text-sm flex-1 min-w-0
                          dark:bg-stone-700 dark:text-stone-100
                          focus:outline-none focus:ring-1 focus:ring-teal-500"
             />
@@ -279,15 +392,15 @@ export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupPr
       <div className="flex gap-2 border-t border-stone-100 dark:border-stone-700 pt-3">
         <button
           type="submit"
-          disabled={validCount < 2}
+          disabled={validCount < 2 || submitDisabledReason !== undefined}
+          title={submitDisabledReason}
           className="bg-teal-700 text-white px-4 py-1.5 rounded text-sm font-medium
                      enabled:hover:bg-teal-800 transition-colors cursor-pointer
                      disabled:opacity-50 disabled:cursor-not-allowed
                      focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 dark:focus:ring-offset-stone-900"
         >
-          {isRequest ? 'Request Poll' : 'Start Poll'}
+          {submitLabel}
         </button>
-
         <button
           type="button"
           onClick={onCancel}
@@ -295,7 +408,19 @@ export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupPr
         >
           Cancel
         </button>
+        {secondaryAction && (
+          <button
+            type="button"
+            onClick={secondaryAction.onClick}
+            className="ml-auto text-sm text-stone-600 dark:text-stone-300 hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
+          >
+            {secondaryAction.label}
+          </button>
+        )}
       </div>
+      {submitDisabledReason && (
+        <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">{submitDisabledReason}</p>
+      )}
     </form>
   );
 }

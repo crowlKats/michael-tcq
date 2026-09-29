@@ -27,16 +27,39 @@ function renderSetup(
   socket: TypedSocket | null = null,
   onCancel = () => {},
   onSubmitted = () => {},
-  mode: 'start' | 'request' = 'start',
+  mode: 'start' | 'request' | 'approve' = 'start',
+  extra: Partial<React.ComponentProps<typeof PollSetup>> = {},
 ) {
   return render(
     <TestMeetingProvider meeting={baseMeeting} user={chairUser}>
       <SocketContext value={socket}>
-        <PollSetup mode={mode} onCancel={onCancel} onSubmitted={onSubmitted} />
+        <PollSetup mode={mode} onCancel={onCancel} onSubmitted={onSubmitted} {...extra} />
       </SocketContext>
     </TestMeetingProvider>,
   );
 }
+
+const pendingRequest = {
+  id: 'req-1',
+  requesterId: 'github:bob' as const,
+  topic: 'Ship it?',
+  multiSelect: false,
+  options: [
+    { id: 'o1', emoji: '👍', label: 'Yes' },
+    { id: 'o2', emoji: '👎', label: 'No' },
+    { id: 'o3', emoji: '🤷', label: 'Abstain' },
+  ],
+  requestedAt: '2026-01-01T00:00:00.000Z',
+};
+
+const bobUser: User = {
+  provider: 'github',
+  accountId: 'bob',
+  handle: 'bob',
+  name: 'Bob',
+  organisation: '',
+  avatarUrl: 'https://github.com/bob.png?size=80',
+};
 
 describe('PollSetup', () => {
   it('renders the default options', () => {
@@ -224,6 +247,107 @@ describe('PollSetup', () => {
         options: DEFAULT_POLL_OPTIONS.map((o) => ({ emoji: o.emoji, label: o.label })),
       });
       expect(onSubmitted).toHaveBeenCalled();
+    });
+  });
+
+  describe('approve mode (chair reviewing a request)', () => {
+    it('pre-fills the form from the request and names the requester', () => {
+      renderSetup(
+        null,
+        () => {},
+        () => {},
+        'approve',
+        { initial: pendingRequest, requester: bobUser },
+      );
+
+      expect(screen.getByRole('heading', { name: 'Review Poll Request' })).toBeInTheDocument();
+      expect(screen.getByText('Bob')).toBeInTheDocument();
+      expect(screen.getByLabelText('Poll topic')).toHaveValue('Ship it?');
+      expect(screen.getByLabelText(/allow selecting multiple/i)).not.toBeChecked();
+      const labels = screen.getAllByLabelText('Option label') as HTMLInputElement[];
+      expect(labels.map((l) => l.value)).toEqual(['Yes', 'No', 'Abstain']);
+      expect(screen.getAllByLabelText('Choose emoji').map((b) => b.textContent)).toEqual(['👍', '👎', '🤷']);
+      expect(screen.getByRole('button', { name: 'Approve & Start Poll' })).toBeEnabled();
+    });
+
+    it('emits poll:approveRequest with the request id and the (edited) configuration', () => {
+      const emit = vi.fn();
+      const onSubmitted = vi.fn();
+      renderSetup({ emit } as unknown as TypedSocket, () => {}, onSubmitted, 'approve', {
+        initial: pendingRequest,
+        requester: bobUser,
+      });
+
+      // Chair tweaks the topic and drops the last option before approving.
+      fireEvent.change(screen.getByLabelText('Poll topic'), { target: { value: 'Ship it today?' } });
+      fireEvent.click(screen.getAllByLabelText('Remove option')[2]);
+      fireEvent.click(screen.getByRole('button', { name: 'Approve & Start Poll' }));
+
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit).toHaveBeenCalledWith('poll:approveRequest', {
+        id: 'req-1',
+        topic: 'Ship it today?',
+        multiSelect: false,
+        options: [
+          { emoji: '👍', label: 'Yes' },
+          { emoji: '👎', label: 'No' },
+        ],
+      });
+      expect(onSubmitted).toHaveBeenCalled();
+    });
+
+    it('disables approval with an explanation while another poll is running', () => {
+      renderSetup(
+        null,
+        () => {},
+        () => {},
+        'approve',
+        {
+          initial: pendingRequest,
+          submitDisabledReason: 'Stop the running poll before approving another.',
+        },
+      );
+      const submit = screen.getByRole('button', { name: 'Approve & Start Poll' });
+      expect(submit).toBeDisabled();
+      expect(screen.getByText('Stop the running poll before approving another.')).toBeInTheDocument();
+    });
+
+    it('renders the secondary action (Dismiss request)', () => {
+      const onClick = vi.fn();
+      renderSetup(
+        null,
+        () => {},
+        () => {},
+        'approve',
+        {
+          initial: pendingRequest,
+          secondaryAction: { label: 'Dismiss request', onClick },
+        },
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss request' }));
+      expect(onClick).toHaveBeenCalled();
+    });
+  });
+
+  describe('request mode with an existing request (requester editing)', () => {
+    it('pre-fills, relabels to Update Request, and re-emits poll:request', () => {
+      const emit = vi.fn();
+      renderSetup(
+        { emit } as unknown as TypedSocket,
+        () => {},
+        () => {},
+        'request',
+        { initial: pendingRequest },
+      );
+
+      expect(screen.getByRole('heading', { name: 'Edit Poll Request' })).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Poll topic'), { target: { value: 'Revised' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Update Request' }));
+
+      expect(emit).toHaveBeenCalledWith(
+        'poll:request',
+        expect.objectContaining({ topic: 'Revised', multiSelect: false }),
+      );
     });
   });
 });

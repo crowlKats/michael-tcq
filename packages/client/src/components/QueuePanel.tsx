@@ -191,6 +191,13 @@ export function QueuePanel({
     [pollRequests, isChair, ownerKey],
   );
 
+  // The request currently open in the review dialog (chairs: review/edit/
+  // approve; requesters: revise/withdraw). Held by id so a delta that
+  // removes it (another chair approved or dismissed it, or the agenda
+  // advanced) closes the dialog automatically.
+  const [reviewRequestId, setReviewRequestId] = useState<string | null>(null);
+  const reviewRequest = reviewRequestId ? visiblePollRequests.find((r) => r.id === reviewRequestId) : undefined;
+
   // Whether the "advance agenda item" confirmation modal is open
   const [showAdvanceConfirm, setShowAdvanceConfirm] = useState(false);
 
@@ -210,6 +217,11 @@ export function QueuePanel({
   const { dialogRef: pollSetupDialogRef, renderContents: showPollSetupContents } = useNativeDialog(showPollSetup, () =>
     setShowPollSetup(false),
   );
+  const { dialogRef: reviewDialogRef, renderContents: showReviewContents } = useNativeDialog(
+    reviewRequest !== undefined,
+    () => setReviewRequestId(null),
+  );
+
   const { dialogRef: activePollDialogRef, renderContents: showActivePollContents } = useNativeDialog(
     Boolean(meeting?.poll),
     () => {},
@@ -576,17 +588,14 @@ export function QueuePanel({
           >
             Poll Requests
           </h2>
-          <ul className="pl-3 space-y-2">
+          <ul className="pl-3 space-y-1.5">
             {visiblePollRequests.map((request) => (
               <PollRequestRow
                 key={request.id}
                 request={request}
                 requester={meeting.users[request.requesterId]}
                 isChair={isChair}
-                // A poll is a single modal for the whole room — approving a
-                // second one mid-poll would silently replace the first.
-                approveDisabled={Boolean(meeting.poll)}
-                onApprove={() => socket?.emit('poll:approveRequest', { id: request.id })}
+                onOpen={() => setReviewRequestId(request.id)}
                 onDismiss={() => socket?.emit('poll:dismissRequest', { id: request.id })}
               />
             ))}
@@ -888,6 +897,43 @@ export function QueuePanel({
               mode={pollSetupMode}
               onCancel={() => setShowPollSetup(false)}
               onSubmitted={() => setShowPollSetup(false)}
+            />
+          </Suspense>
+        )}
+      </dialog>
+
+      {/* Poll request review modal — the same setup form pre-filled from a
+          pending request. Chairs can edit and approve (or dismiss);
+          requesters can revise (or withdraw) their own. */}
+      <dialog
+        ref={reviewDialogRef}
+        aria-label={isChair ? 'Review poll request' : 'Edit poll request'}
+        className="tcq-dialog w-[min(36rem,calc(100vw-2rem))] max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-lg
+                   border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-left
+                   shadow-lg dark:shadow-stone-950/50"
+      >
+        {showReviewContents && reviewRequest && (
+          <Suspense fallback={<div className="p-6 text-stone-400">Loading&hellip;</div>}>
+            <PollSetup
+              // Remount per request so the form re-seeds from `initial`.
+              key={reviewRequest.id}
+              mode={isChair ? 'approve' : 'request'}
+              initial={reviewRequest}
+              requester={meeting.users[reviewRequest.requesterId]}
+              // A poll is a single modal for the whole room — approving a
+              // second one mid-poll would silently replace the first.
+              submitDisabledReason={
+                isChair && meeting.poll ? 'Stop the running poll before approving another.' : undefined
+              }
+              secondaryAction={{
+                label: isChair ? 'Dismiss request' : 'Withdraw request',
+                onClick: () => {
+                  socket?.emit('poll:dismissRequest', { id: reviewRequest.id });
+                  setReviewRequestId(null);
+                },
+              }}
+              onCancel={() => setReviewRequestId(null)}
+              onSubmitted={() => setReviewRequestId(null)}
             />
           </Suspense>
         )}
@@ -1305,68 +1351,59 @@ interface PollRequestRowProps {
   request: PollRequest;
   requester: import('@tcq/shared').User | undefined;
   isChair: boolean;
-  /** True while a poll is already running — Approve is disabled. */
-  approveDisabled: boolean;
-  onApprove: () => void;
+  /** Open the request in the review dialog (full text, editable). */
+  onOpen: () => void;
+  /** Dismiss (chair) or withdraw (requester) without opening it. */
   onDismiss: () => void;
 }
 
 /**
- * One pending poll request: who asked, what they proposed (topic, the
- * option emoji with labels on hover, selection mode), how long ago, and
- * the actions — Approve/Dismiss for chairs, Withdraw for the requester.
+ * One pending poll request as a compact, clickable summary line: who
+ * asked, the topic on a single truncated line, the option emoji, and
+ * how long ago. Clicking the summary opens the review dialog, which
+ * shows the full topic and every option in the editable setup form —
+ * that's where a chair reads the whole proposal and approves it. The
+ * only inline action is Dismiss / Withdraw.
  */
-function PollRequestRow({ request, requester, isChair, approveDisabled, onApprove, onDismiss }: PollRequestRowProps) {
-  const optionsSummary = request.options.map((o) => `${o.emoji} ${o.label}`).join(', ');
-  const actionButtonClass =
-    'text-xs border border-stone-300 dark:border-stone-600 rounded px-2 py-0.5 transition-colors cursor-pointer ' +
-    'text-stone-600 dark:text-stone-400 enabled:hover:bg-stone-100 dark:enabled:hover:bg-stone-800 ' +
-    'disabled:opacity-50 disabled:cursor-not-allowed';
-
+function PollRequestRow({ request, requester, isChair, onOpen, onDismiss }: PollRequestRowProps) {
   return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-      <UserBadge user={requester} size={18} className="text-stone-700 dark:text-stone-200 shrink-0" />
-      <span className="text-stone-800 dark:text-stone-200">
-        {request.topic ? (
-          <InlineMarkdown>{request.topic}</InlineMarkdown>
-        ) : (
-          <span className="italic text-stone-500 dark:text-stone-400">No topic</span>
-        )}
-      </span>
-      <span
-        className="text-stone-500 dark:text-stone-400 cursor-default"
-        title={optionsSummary}
-        aria-label={`Options: ${optionsSummary}. ${request.multiSelect ? 'Multiple selections allowed' : 'Single selection'}.`}
+    <li className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onOpen}
+        title={isChair ? 'Review, edit and approve this request' : 'View or edit your request'}
+        className="group flex min-w-0 flex-1 items-center gap-3 rounded-md border border-stone-200 dark:border-stone-700
+                   bg-stone-50 dark:bg-stone-800 px-3 py-1.5 text-left text-sm cursor-pointer
+                   hover:border-teal-500/60 hover:bg-stone-100 dark:hover:bg-stone-700/70 transition-colors
+                   focus:outline-none focus:ring-2 focus:ring-teal-500"
       >
-        {request.options.map((o) => o.emoji).join(' ')}
-        <span className="ml-2 text-xs">{request.multiSelect ? 'multi-select' : 'single-select'}</span>
-      </span>
-      <RelativeTime timestamp={request.requestedAt} className="text-xs text-stone-500 dark:text-stone-400" />
-      <span className="ml-auto flex items-center gap-2">
-        {isChair ? (
-          <>
-            <button
-              type="button"
-              onClick={onApprove}
-              disabled={approveDisabled}
-              title={approveDisabled ? 'Stop the running poll before approving another' : 'Start this poll as proposed'}
-              className={`${actionButtonClass} enabled:text-teal-700 dark:enabled:text-teal-400 enabled:border-teal-600/50`}
-            >
-              Approve
-            </button>
-            <button type="button" onClick={onDismiss} className={actionButtonClass}>
-              Dismiss
-            </button>
-          </>
-        ) : (
-          <>
-            <span className="text-xs italic text-stone-500 dark:text-stone-400">Awaiting chair approval</span>
-            <button type="button" onClick={onDismiss} className={actionButtonClass}>
-              Withdraw
-            </button>
-          </>
-        )}
-      </span>
+        <UserBadge user={requester} size={18} className="shrink-0 text-stone-700 dark:text-stone-200" />
+        <span className="min-w-0 flex-1 truncate text-stone-800 dark:text-stone-100">
+          {request.topic ? (
+            <InlineMarkdown>{request.topic}</InlineMarkdown>
+          ) : (
+            <span className="italic text-stone-500 dark:text-stone-400">No topic</span>
+          )}
+        </span>
+        <span
+          className="shrink-0 text-stone-500 dark:text-stone-400 tracking-wide"
+          aria-label={`${request.options.length} options: ${request.options.map((o) => o.label).join(', ')}`}
+        >
+          {request.options.map((o) => o.emoji).join(' ')}
+        </span>
+        <RelativeTime timestamp={request.requestedAt} className="shrink-0 text-xs text-stone-500 dark:text-stone-400" />
+        <span className="shrink-0 text-xs text-teal-700 dark:text-teal-400 opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity">
+          {isChair ? 'Review' : 'Edit'} →
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="shrink-0 text-xs border border-stone-300 dark:border-stone-600 rounded px-2 py-0.5 transition-colors cursor-pointer
+                   text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800"
+      >
+        {isChair ? 'Dismiss' : 'Withdraw'}
+      </button>
     </li>
   );
 }

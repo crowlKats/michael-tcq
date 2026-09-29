@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+
 import type {
   CurrentContext,
   CurrentSpeaker,
@@ -1183,7 +1184,7 @@ describe('QueuePanel', () => {
       expect(screen.queryByRole('button', { name: 'Request Poll' })).not.toBeInTheDocument();
     });
 
-    it('lists every pending request for chairs with Approve/Dismiss and emits the right events', () => {
+    it('lists every pending request for chairs as clickable summaries with Dismiss', () => {
       const emit = vi.fn();
       const socket = { emit } as unknown as TypedSocket;
       const meeting = runningWithItem({
@@ -1191,46 +1192,55 @@ describe('QueuePanel', () => {
       });
       renderQueue(meeting, chairUser, socket);
 
-      const section = screen.getByRole('region', { name: 'Poll Requests' });
-      expect(section).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Poll Requests' })).toBeInTheDocument();
       expect(screen.getByText('Ship it?')).toBeInTheDocument();
       expect(screen.getByText('No topic')).toBeInTheDocument();
       expect(screen.getByText('Bob')).toBeInTheDocument();
+      // The option emoji strip carries the labels for assistive tech.
+      expect(screen.getAllByLabelText(/2 options: Yes, No/)).toHaveLength(2);
 
-      const approves = screen.getAllByRole('button', { name: 'Approve' });
+      // Two clickable summaries (open the review dialog) and two Dismiss buttons.
+      const summaries = screen.getAllByRole('button', { name: /Ship it\?|No topic/ });
+      expect(summaries).toHaveLength(2);
+      expect(summaries[0]).toHaveAttribute('title', expect.stringMatching(/review/i));
       const dismisses = screen.getAllByRole('button', { name: 'Dismiss' });
-      expect(approves).toHaveLength(2);
       expect(dismisses).toHaveLength(2);
       expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument();
+      // No inline Approve — approval happens in the review dialog after
+      // the chair has seen the full proposal.
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
 
-      fireEvent.click(approves[0]);
-      expect(emit).toHaveBeenCalledWith('poll:approveRequest', { id: 'r1' });
       fireEvent.click(dismisses[1]);
       expect(emit).toHaveBeenCalledWith('poll:dismissRequest', { id: 'r2' });
     });
 
-    it('disables Approve while a poll is already running', () => {
-      const meeting = runningWithItem({
-        pollRequests: [requestFrom('r1', 'github:bob')],
-        poll: { options: [], reactions: [], startTime: TEST_TIME, startChairId: 'github:alice', multiSelect: true },
-      });
-      renderQueue(meeting, chairUser);
-      expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
-      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeEnabled();
+    it('clicking a summary opens the review dialog for that request', () => {
+      const meeting = runningWithItem({ pollRequests: [requestFrom('r1', 'github:bob', 'Ship it?')] });
+      const { container } = renderQueue(meeting, chairUser);
+
+      const dialog = container.querySelector('dialog[aria-label="Review poll request"]')!;
+      expect(dialog).not.toBeNull();
+      // Nothing rendered inside until opened (content is gated + lazy).
+      expect(dialog.textContent).toBe('');
+
+      fireEvent.click(screen.getByRole('button', { name: /Ship it\?/ }));
+      // The native dialog is now open; its (lazy) contents start mounting.
+      expect(dialog).toHaveAttribute('open');
     });
 
-    it('shows a participant only their own request, with Withdraw', () => {
+    it('shows a participant only their own request, with Withdraw, and an Edit affordance', () => {
       const emit = vi.fn();
       const socket = { emit } as unknown as TypedSocket;
       const meeting = runningWithItem({
         pollRequests: [requestFrom('r1', 'github:bob', 'Mine'), requestFrom('r2', 'github:alice', 'Not mine')],
       });
-      renderQueue(meeting, otherUser, socket);
+      const { container } = renderQueue(meeting, otherUser, socket);
 
       expect(screen.getByText('Mine')).toBeInTheDocument();
       expect(screen.queryByText('Not mine')).not.toBeInTheDocument();
-      expect(screen.getByText('Awaiting chair approval')).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Mine/ })).toHaveAttribute('title', expect.stringMatching(/edit/i));
+      expect(container.querySelector('dialog[aria-label="Edit poll request"]')).not.toBeNull();
+      expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: 'Withdraw' }));
       expect(emit).toHaveBeenCalledWith('poll:dismissRequest', { id: 'r1' });

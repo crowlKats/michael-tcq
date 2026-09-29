@@ -27,6 +27,7 @@ import {
   ChairsUpdatePayloadSchema,
   NextAgendaItemPayloadSchema,
   NextSpeakerPayloadSchema,
+  PollApproveRequestPayloadSchema,
   PollReactPayloadSchema,
   PollRequestIdPayloadSchema,
   PollRequestPayloadSchema,
@@ -1407,9 +1408,11 @@ export function registerSocketHandlers(
     });
 
     // --- poll:approveRequest ---
-    // Chair starts a poll from a pending request. The request is consumed
-    // in the same delta (`requestId` on poll:started) so clients never
-    // see the poll running with its request still listed.
+    // Chair starts a poll from a pending request, optionally with edits
+    // (any PollStartPayload field overrides the requester's proposal).
+    // The request is consumed in the same delta (`requestId` on
+    // poll:started) so clients never see the poll running with its
+    // request still listed.
     socket.on('poll:approveRequest', (payload) => {
       if (!joinedMeetingId) return;
       if (!meetingManager.isChair(joinedMeetingId, user)) {
@@ -1417,7 +1420,7 @@ export function registerSocketHandlers(
         return;
       }
 
-      const parsed = parsePayload(PollRequestIdPayloadSchema, payload, socket);
+      const parsed = parsePayload(PollApproveRequestPayloadSchema, payload, socket);
       if (!parsed) return;
 
       const meeting = meetingManager.get(joinedMeetingId);
@@ -1434,14 +1437,13 @@ export function registerSocketHandlers(
       }
 
       const chairId = ensureUser(meeting, user);
-      meetingManager.startPoll(
-        joinedMeetingId,
-        request.options.map((o) => ({ emoji: o.emoji, label: o.label })),
-        chairId,
-        request.topic,
-        request.multiSelect,
-        request.requesterId,
-      );
+      // Chair edits win over the proposal field-by-field. An explicitly
+      // empty topic override clears it (same convention as poll:start).
+      const options = parsed.options ?? request.options.map((o) => ({ emoji: o.emoji, label: o.label }));
+      const topic = parsed.topic !== undefined ? parsed.topic || undefined : request.topic;
+      const multiSelect = parsed.multiSelect ?? request.multiSelect;
+      meetingManager.startPoll(joinedMeetingId, options, chairId, topic, multiSelect, request.requesterId);
+
       meetingManager.removePollRequest(joinedMeetingId, request.id);
 
       const updated = meetingManager.get(joinedMeetingId);

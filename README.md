@@ -43,7 +43,8 @@ This project is a clean-room reimplementation inspired by [the original TCQ](htt
 ### Polls and meeting log
 
 - **Customisable polls** ([bterlson/tcq#67](https://github.com/bterlson/tcq/pull/67)) — poll options (also known as temperature checks) are fully configurable per poll. Chairs can add, remove, and customise the emoji and label for each option, rather than being limited to a fixed set. Results can be copied to the clipboard.
-- **Poll requests** — any participant can propose a fully-configured poll (topic, options, selection mode) with **Request Poll**. Chairs see pending requests under the current agenda item and can **Approve** one to start it exactly as proposed, or **Dismiss** it; requesters can withdraw their own. Requests are cleared when the agenda advances, and the meeting log records who requested an approved poll.
+- **Poll requests** — any participant can propose a fully-configured poll (topic, options, selection mode) with **Request Poll**. Chairs see pending requests under the current agenda item; clicking one opens it in the poll setup form to review, optionally edit, and **Approve & Start Poll**, or **Dismiss** it. Requesters can revise or withdraw their own.
+  Requests are cleared when the agenda advances, and the meeting log records who requested an approved poll.
 
 - **Meeting log** — the Log tab shows a chronological timeline of meeting events: agenda items started and finished (with duration and participant summaries), speaker topics with grouped replies and clarifying questions, and poll results. Timestamps are displayed as relative times with full locale-formatted timestamps on hover.
 - **Log export** — download the meeting log as a Markdown file with an automatically generated participant summary sorted by total speaking time.

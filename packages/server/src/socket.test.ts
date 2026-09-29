@@ -2164,6 +2164,44 @@ describe('Socket.IO integration', () => {
       expect(state.poll!.requesterId).toBe(userKey(requester));
     });
 
+    it("applies the chair's edits on top of the proposal and keeps the requester attribution", async () => {
+      const meeting = ctx.meetingManager.create([TEST_USER]);
+      const request = ctx.meetingManager.requestPoll(meeting.id, samplePollOptions, requester, 'Ship it?', false)!;
+      const client = await joinMeeting(meeting.id);
+
+      const p = waitForChange(client, ctx.meetingManager, meeting.id);
+      client.emit('poll:approveRequest', {
+        id: request.id,
+        topic: 'Ship it today?',
+        options: [
+          { emoji: '✅', label: 'Go' },
+          { emoji: '⛔', label: 'No go' },
+          { emoji: '🤷', label: 'Abstain' },
+        ],
+      });
+      const state = await p;
+
+      expect(state.pollRequests).toBeUndefined();
+      expect(state.poll!.topic).toBe('Ship it today?');
+      expect(state.poll!.options.map((o) => o.label)).toEqual(['Go', 'No go', 'Abstain']);
+      // Omitted override → the proposal's value is kept.
+      expect(state.poll!.multiSelect).toBe(false);
+      expect(state.poll!.requesterId).toBe(userKey(requester));
+      expect(state.poll!.startChairId).toBe(userKey(TEST_USER));
+    });
+
+    it('validates edits like poll:start (e.g. fewer than 2 options is rejected)', async () => {
+      const meeting = ctx.meetingManager.create([TEST_USER]);
+      const request = ctx.meetingManager.requestPoll(meeting.id, samplePollOptions, requester, undefined, true)!;
+      const client = await joinMeeting(meeting.id);
+
+      const errorPromise = waitForEvent<string>(client, 'error');
+      client.emit('poll:approveRequest', { id: request.id, options: [{ emoji: '👍', label: 'Only' }] });
+      expect(await errorPromise).toMatch(/at least 2/i);
+      expect(ctx.meetingManager.get(meeting.id)!.poll).toBeUndefined();
+      expect(ctx.meetingManager.get(meeting.id)!.pollRequests).toHaveLength(1);
+    });
+
     it('rejects from non-chair (including the requester)', async () => {
       const chairUser = githubUser({ id: 999, login: 'chairperson', name: 'Chair', organisation: '' });
       const meeting = ctx.meetingManager.create([chairUser]);
