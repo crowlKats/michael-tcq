@@ -10,6 +10,7 @@ export type {
   PollOption,
   Reaction,
   ActivePoll,
+  PollRequest,
   CurrentSpeaker,
   CurrentTopic,
   MeetingQueueState,
@@ -45,6 +46,8 @@ export type {
   QueueSetClosedPayload,
   PollStartPayload,
   PollReactPayload,
+  PollRequestPayload,
+  PollRequestIdPayload,
   NextSpeakerPayload,
   NextAgendaItemPayload,
   AdvanceResponse,
@@ -73,7 +76,10 @@ export type {
   PollStartedDelta,
   PollStoppedDelta,
   PollReactedDelta,
+  PollRequestedDelta,
+  PollRequestRemovedDelta,
 } from './messages.js';
+
 export {
   AgendaAddPayloadSchema,
   AgendaEditPayloadSchema,
@@ -92,6 +98,8 @@ export {
   QueueSetClosedPayloadSchema,
   PollStartPayloadSchema,
   PollReactPayloadSchema,
+  PollRequestPayloadSchema,
+  PollRequestIdPayloadSchema,
   NextSpeakerPayloadSchema,
   NextAgendaItemPayloadSchema,
   CreateMeetingBodySchema,

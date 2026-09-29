@@ -1,7 +1,14 @@
 /**
- * Poll setup form — shown to chairs when they click "Poll".
- * Allows adding, removing, and editing the response options before
- * starting the poll.
+ * Poll setup form — shown to chairs when they click "Create Poll", and to
+ * everyone else when they click "Request Poll". Allows adding, removing,
+ * and editing the response options before starting (or proposing) the
+ * poll.
+ *
+ * In `mode: 'start'` submitting emits `poll:start` and the poll begins
+ * immediately. In `mode: 'request'` the identical configuration is sent
+ * as `poll:request` instead — it lands in the chairs' pending-requests
+ * list and only becomes a poll once a chair approves it.
+
  *
  * Each option has an emoji (entered via text input — users can use
  * their OS emoji picker: Cmd+Ctrl+Space on Mac, Win+. on Windows)
@@ -70,11 +77,19 @@ function randomEmoji(): string {
 }
 
 interface PollSetupProps {
+  /**
+   * `'start'` (chairs): submit starts the poll. `'request'` (everyone
+   * else): submit proposes it for chair approval. Defaults to `'start'`.
+   */
+  mode?: 'start' | 'request';
   onCancel: () => void;
-  onStarted: () => void;
+  /** Called after the form has emitted (poll started or request sent). */
+  onSubmitted: () => void;
 }
 
-export function PollSetup({ onCancel, onStarted }: PollSetupProps) {
+export function PollSetup({ mode = 'start', onCancel, onSubmitted }: PollSetupProps) {
+  const isRequest = mode === 'request';
+
   const socket = useSocket();
   const [topic, setTopic] = useState('');
   const [multiSelect, setMultiSelect] = useState(true);
@@ -118,7 +133,7 @@ export function PollSetup({ onCancel, onStarted }: PollSetupProps) {
     setOptions((prev) => [...prev, { key: nextKey++, emoji: randomEmoji(), label: '' }]);
   }
 
-  /** Start the poll with the configured options. */
+  /** Start (or request) the poll with the configured options. */
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
 
@@ -127,16 +142,23 @@ export function PollSetup({ onCancel, onStarted }: PollSetupProps) {
 
     if (validOptions.length < 2) return;
 
-    socket?.emit('poll:start', {
+    const payload = {
       topic: topic.trim() || undefined,
       multiSelect,
       options: validOptions.map((opt) => ({
         emoji: opt.emoji.trim(),
         label: opt.label.trim(),
       })),
-    });
+    };
+    // Same payload shape either way — a request is a poll that hasn't
+    // been approved yet.
+    if (isRequest) {
+      socket?.emit('poll:request', payload);
+    } else {
+      socket?.emit('poll:start', payload);
+    }
 
-    onStarted();
+    onSubmitted();
   }
 
   // Count valid options for the minimum-2 check
@@ -144,7 +166,15 @@ export function PollSetup({ onCancel, onStarted }: PollSetupProps) {
 
   return (
     <form onSubmit={handleSubmit} className="p-6">
-      <h3 className="text-lg font-semibold text-stone-800 dark:text-stone-200 mb-3">Create Poll</h3>
+      <h3 className="text-lg font-semibold text-stone-800 dark:text-stone-200 mb-3">
+        {isRequest ? 'Request Poll' : 'Create Poll'}
+      </h3>
+      {isRequest && (
+        <p className="text-sm text-stone-600 dark:text-stone-400 mb-3">
+          Set up the poll you'd like to run. A chair will see your request and can start it as-is — nothing happens
+          until they approve it.
+        </p>
+      )}
 
       {/* Poll topic (optional) */}
       <input
@@ -255,8 +285,9 @@ export function PollSetup({ onCancel, onStarted }: PollSetupProps) {
                      disabled:opacity-50 disabled:cursor-not-allowed
                      focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 dark:focus:ring-offset-stone-900"
         >
-          Start Poll
+          {isRequest ? 'Request Poll' : 'Start Poll'}
         </button>
+
         <button
           type="button"
           onClick={onCancel}

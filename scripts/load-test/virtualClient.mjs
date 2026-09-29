@@ -32,6 +32,8 @@ export const DELTA_EVENTS = [
   'poll:started',
   'poll:stopped',
   'poll:reacted',
+  'poll:requested',
+  'poll:requestRemoved',
 ];
 
 // Probe topic format: `probe-<counter>-<emitMs>`. Plain ASCII so the

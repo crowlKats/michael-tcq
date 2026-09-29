@@ -28,6 +28,8 @@ import {
   NextAgendaItemPayloadSchema,
   NextSpeakerPayloadSchema,
   PollReactPayloadSchema,
+  PollRequestIdPayloadSchema,
+  PollRequestPayloadSchema,
   PollStartPayloadSchema,
   QueueAddPayloadSchema,
   QueueEditPayloadSchema,
@@ -260,7 +262,9 @@ type DeltaEventName =
   | 'agenda:advanced'
   | 'poll:started'
   | 'poll:stopped'
-  | 'poll:reacted';
+  | 'poll:reacted'
+  | 'poll:requested'
+  | 'poll:requestRemoved';
 
 type DeltaEventPayload<E extends DeltaEventName> = Parameters<ServerToClientEvents[E]>[0];
 
@@ -1336,7 +1340,9 @@ export function registerSocketHandlers(
           timestamp: poll.startTime,
           startChairId: poll.startChairId,
           endChairId: chairId,
+          ...(poll.requesterId ? { requesterId: poll.requesterId } : {}),
           topic: poll.topic,
+
           duration: new Date(now).getTime() - new Date(poll.startTime).getTime(),
           totalVoters: voterSet.size,
           results,
@@ -1369,6 +1375,106 @@ export function registerSocketHandlers(
       emitDelta(io, meetingManager, joinedMeetingId, 'poll:reacted', {
         reactions: [...meeting.poll.reactions],
       });
+    });
+
+    // --- poll:request ---
+    // Any participant proposes a fully-configured poll for a chair to
+    // approve. Same validation as poll:start. One pending request per
+    // user — a new one replaces the requester's earlier request.
+    socket.on('poll:request', (payload) => {
+      if (!joinedMeetingId) return;
+
+      const parsed = parsePayload(PollRequestPayloadSchema, payload, socket);
+      if (!parsed) return;
+
+      const request = meetingManager.requestPoll(
+        joinedMeetingId,
+        parsed.options,
+        user,
+        parsed.topic || undefined,
+        parsed.multiSelect !== false,
+      );
+      if (!request) return;
+
+      const meeting = meetingManager.get(joinedMeetingId);
+      if (!meeting) return;
+      // Carry the requester's User record so every client can render
+      // their badge on the request row immediately.
+      emitDelta(io, meetingManager, joinedMeetingId, 'poll:requested', {
+        request,
+        users: { [request.requesterId]: meeting.users[request.requesterId] },
+      });
+    });
+
+    // --- poll:approveRequest ---
+    // Chair starts a poll from a pending request. The request is consumed
+    // in the same delta (`requestId` on poll:started) so clients never
+    // see the poll running with its request still listed.
+    socket.on('poll:approveRequest', (payload) => {
+      if (!joinedMeetingId) return;
+      if (!meetingManager.isChair(joinedMeetingId, user)) {
+        socket.emit('error', 'Only chairs can approve a poll request');
+        return;
+      }
+
+      const parsed = parsePayload(PollRequestIdPayloadSchema, payload, socket);
+      if (!parsed) return;
+
+      const meeting = meetingManager.get(joinedMeetingId);
+      if (!meeting) return;
+
+      const request = meetingManager.getPollRequest(joinedMeetingId, parsed.id);
+      if (!request) {
+        socket.emit('error', 'That poll request is no longer pending');
+        return;
+      }
+      if (meeting.poll) {
+        socket.emit('error', 'A poll is already running — stop it before approving another');
+        return;
+      }
+
+      const chairId = ensureUser(meeting, user);
+      meetingManager.startPoll(
+        joinedMeetingId,
+        request.options.map((o) => ({ emoji: o.emoji, label: o.label })),
+        chairId,
+        request.topic,
+        request.multiSelect,
+        request.requesterId,
+      );
+      meetingManager.removePollRequest(joinedMeetingId, request.id);
+
+      const updated = meetingManager.get(joinedMeetingId);
+      if (!updated?.poll) return;
+      emitDelta(io, meetingManager, joinedMeetingId, 'poll:started', {
+        poll: updated.poll,
+        requestId: request.id,
+      });
+    });
+
+    // --- poll:dismissRequest ---
+    // Drop a pending request without starting it. Chairs can dismiss any
+    // request; a participant can withdraw their own.
+    socket.on('poll:dismissRequest', (payload) => {
+      if (!joinedMeetingId) return;
+
+      const parsed = parsePayload(PollRequestIdPayloadSchema, payload, socket);
+      if (!parsed) return;
+
+      const request = meetingManager.getPollRequest(joinedMeetingId, parsed.id);
+      if (!request) {
+        socket.emit('error', 'That poll request is no longer pending');
+        return;
+      }
+
+      const isOwn = request.requesterId === userKey(user);
+      if (!isOwn && !meetingManager.isChair(joinedMeetingId, user)) {
+        socket.emit('error', 'Only chairs can dismiss a poll request');
+        return;
+      }
+
+      if (!meetingManager.removePollRequest(joinedMeetingId, request.id)) return;
+      emitDelta(io, meetingManager, joinedMeetingId, 'poll:requestRemoved', { id: request.id });
     });
 
     // --- meeting:nextAgendaItem ---

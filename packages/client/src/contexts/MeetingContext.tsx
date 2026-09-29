@@ -135,7 +135,10 @@ export function meetingReducer(state: MeetingContextState, action: MeetingAction
     case 'poll:started':
     case 'poll:stopped':
     case 'poll:reacted':
+    case 'poll:requested':
+    case 'poll:requestRemoved':
       if (!state.meeting) return state;
+
       return {
         ...state,
         meeting: applyDelta(state.meeting, action),

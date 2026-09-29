@@ -72,6 +72,8 @@ const DELTA_EVENT_TYPES = [
   'poll:started',
   'poll:stopped',
   'poll:reacted',
+  'poll:requested',
+  'poll:requestRemoved',
 ] as const satisfies readonly MeetingDeltaAction['type'][];
 
 type DeltaEventName = (typeof DELTA_EVENT_TYPES)[number];

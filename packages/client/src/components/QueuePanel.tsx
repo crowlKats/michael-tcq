@@ -28,7 +28,8 @@ import {
 } from '@dnd-kit/sortable';
 import { restrictToParentElement, restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import { CSS } from '@dnd-kit/utilities';
-import type { AgendaItem, QueueEntry, QueueEntryType } from '@tcq/shared';
+import type { AgendaItem, PollRequest, QueueEntry, QueueEntryType } from '@tcq/shared';
+
 import {
   QUEUE_ENTRY_TYPES,
   QUEUE_ENTRY_LABELS,
@@ -50,6 +51,7 @@ import { PollReactions } from './PollReactions.js';
 const PollSetup = lazy(() => import('./PollSetup.js').then((m) => ({ default: m.PollSetup })));
 import { CountUpTimer } from './CountUpTimer.js';
 import { CopyButton } from './CopyButton.js';
+import { RelativeTime } from '../lib/RelativeTime.js';
 import { inputValidation } from '../lib/inputStyles.js';
 
 // Stable references so useSensor's internal useMemo doesn't invalidate every render.
@@ -174,8 +176,20 @@ export function QueuePanel({
     return last.duration === undefined ? last.startTime : undefined;
   })();
 
-  // Whether the poll setup form is open
+  // Whether the poll setup form is open. Chairs use it to start a poll;
+  // everyone else uses the same form to *request* one (see PollSetup's
+  // `mode`), so the dialog's label and the submit action follow `isChair`.
   const [showPollSetup, setShowPollSetup] = useState(false);
+  const pollSetupMode: 'start' | 'request' = isChair ? 'start' : 'request';
+
+  // Pending poll requests this user should see: chairs see every request
+  // (they're the ones who act on them); a participant sees only their own,
+  // so the list can't become a second, noisier queue for the room.
+  const pollRequests = meeting?.pollRequests;
+  const visiblePollRequests = useMemo(
+    () => (pollRequests ?? []).filter((r) => isChair || r.requesterId === ownerKey),
+    [pollRequests, isChair, ownerKey],
+  );
 
   // Whether the "advance agenda item" confirmation modal is open
   const [showAdvanceConfirm, setShowAdvanceConfirm] = useState(false);
@@ -483,6 +497,18 @@ export function QueuePanel({
               )}
             </>
           )}
+
+          {/* Participants can't start a poll, but they can propose one for
+              a chair to approve — same setup form, different verb. */}
+          {!isChair && user && currentAgendaItem && !meeting.poll && (
+            <button
+              onClick={() => setShowPollSetup(true)}
+              className="text-xs border border-stone-300 dark:border-stone-600 rounded px-2 py-0.5
+                         text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors cursor-pointer presentation-hidden"
+            >
+              Request Poll
+            </button>
+          )}
         </div>
 
         {currentAgendaItem ? (
@@ -541,7 +567,35 @@ export function QueuePanel({
         )}
       </section>
 
+      {/* --- Poll Requests Section --- */}
+      {visiblePollRequests.length > 0 && (
+        <section aria-labelledby="poll-requests-heading" className="presentation-hidden">
+          <h2
+            id="poll-requests-heading"
+            className="text-sm font-bold uppercase tracking-wider text-stone-700 dark:text-stone-300 select-none mb-1"
+          >
+            Poll Requests
+          </h2>
+          <ul className="pl-3 space-y-2">
+            {visiblePollRequests.map((request) => (
+              <PollRequestRow
+                key={request.id}
+                request={request}
+                requester={meeting.users[request.requesterId]}
+                isChair={isChair}
+                // A poll is a single modal for the whole room — approving a
+                // second one mid-poll would silently replace the first.
+                approveDisabled={Boolean(meeting.poll)}
+                onApprove={() => socket?.emit('poll:approveRequest', { id: request.id })}
+                onDismiss={() => socket?.emit('poll:dismissRequest', { id: request.id })}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* --- Current Topic Section (hidden when the same turn is the current speaker) --- */}
+
       {currentTopic && currentTopic.speakerId !== currentSpeaker?.id && (
         <section aria-labelledby="topic-heading">
           <h2
@@ -818,17 +872,23 @@ export function QueuePanel({
         )}
       </dialog>
 
-      {/* Poll setup modal — chair only (lazy-loaded to keep emoji-mart out of the main bundle) */}
+      {/* Poll setup modal — "Create poll" for chairs, "Request poll" for
+          participants (lazy-loaded to keep emoji-mart out of the main bundle) */}
       <dialog
         ref={pollSetupDialogRef}
-        aria-label="Create poll"
+        aria-label={pollSetupMode === 'request' ? 'Request poll' : 'Create poll'}
+
         className="tcq-dialog w-[min(28rem,calc(100vw-2rem))] max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-lg
                    border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-left
                    shadow-lg dark:shadow-stone-950/50"
       >
         {showPollSetupContents && (
           <Suspense fallback={<div className="p-6 text-stone-400">Loading&hellip;</div>}>
-            <PollSetup onCancel={() => setShowPollSetup(false)} onStarted={() => setShowPollSetup(false)} />
+            <PollSetup
+              mode={pollSetupMode}
+              onCancel={() => setShowPollSetup(false)}
+              onSubmitted={() => setShowPollSetup(false)}
+            />
           </Suspense>
         )}
       </dialog>
@@ -1237,4 +1297,76 @@ function entryTypeColor(type: string): string {
     default:
       return 'text-stone-600 dark:text-stone-400';
   }
+}
+
+// -- Poll request row --
+
+interface PollRequestRowProps {
+  request: PollRequest;
+  requester: import('@tcq/shared').User | undefined;
+  isChair: boolean;
+  /** True while a poll is already running — Approve is disabled. */
+  approveDisabled: boolean;
+  onApprove: () => void;
+  onDismiss: () => void;
+}
+
+/**
+ * One pending poll request: who asked, what they proposed (topic, the
+ * option emoji with labels on hover, selection mode), how long ago, and
+ * the actions — Approve/Dismiss for chairs, Withdraw for the requester.
+ */
+function PollRequestRow({ request, requester, isChair, approveDisabled, onApprove, onDismiss }: PollRequestRowProps) {
+  const optionsSummary = request.options.map((o) => `${o.emoji} ${o.label}`).join(', ');
+  const actionButtonClass =
+    'text-xs border border-stone-300 dark:border-stone-600 rounded px-2 py-0.5 transition-colors cursor-pointer ' +
+    'text-stone-600 dark:text-stone-400 enabled:hover:bg-stone-100 dark:enabled:hover:bg-stone-800 ' +
+    'disabled:opacity-50 disabled:cursor-not-allowed';
+
+  return (
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+      <UserBadge user={requester} size={18} className="text-stone-700 dark:text-stone-200 shrink-0" />
+      <span className="text-stone-800 dark:text-stone-200">
+        {request.topic ? (
+          <InlineMarkdown>{request.topic}</InlineMarkdown>
+        ) : (
+          <span className="italic text-stone-500 dark:text-stone-400">No topic</span>
+        )}
+      </span>
+      <span
+        className="text-stone-500 dark:text-stone-400 cursor-default"
+        title={optionsSummary}
+        aria-label={`Options: ${optionsSummary}. ${request.multiSelect ? 'Multiple selections allowed' : 'Single selection'}.`}
+      >
+        {request.options.map((o) => o.emoji).join(' ')}
+        <span className="ml-2 text-xs">{request.multiSelect ? 'multi-select' : 'single-select'}</span>
+      </span>
+      <RelativeTime timestamp={request.requestedAt} className="text-xs text-stone-500 dark:text-stone-400" />
+      <span className="ml-auto flex items-center gap-2">
+        {isChair ? (
+          <>
+            <button
+              type="button"
+              onClick={onApprove}
+              disabled={approveDisabled}
+              title={approveDisabled ? 'Stop the running poll before approving another' : 'Start this poll as proposed'}
+              className={`${actionButtonClass} enabled:text-teal-700 dark:enabled:text-teal-400 enabled:border-teal-600/50`}
+            >
+              Approve
+            </button>
+            <button type="button" onClick={onDismiss} className={actionButtonClass}>
+              Dismiss
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="text-xs italic text-stone-500 dark:text-stone-400">Awaiting chair approval</span>
+            <button type="button" onClick={onDismiss} className={actionButtonClass}>
+              Withdraw
+            </button>
+          </>
+        )}
+      </span>
+    </li>
+  );
 }

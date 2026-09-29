@@ -1133,4 +1133,126 @@ describe('QueuePanel', () => {
     expect(li).not.toBeNull();
     expect(li!.className).not.toMatch(/premium-border/);
   });
+  // -- Poll requests --
+
+  describe('poll requests', () => {
+    const runningWithItem = (overrides: Partial<MeetingState> = {}): MeetingState =>
+      makeMeeting({
+        users: { 'github:alice': chairUser, 'github:bob': otherUser },
+        chairIds: ['github:alice'],
+        agenda: [{ kind: 'item', id: '1', name: 'Item', presenterIds: ['github:alice'] }],
+        current: currentOf({ agendaItemId: '1', startedAt: TEST_TIME }),
+        ...overrides,
+      });
+
+    const requestFrom = (id: string, requesterId: string, topic?: string) => ({
+      id,
+      requesterId,
+      ...(topic ? { topic } : {}),
+      multiSelect: true,
+      options: [
+        { id: `${id}-a`, emoji: '👍', label: 'Yes' },
+        { id: `${id}-b`, emoji: '👎', label: 'No' },
+      ],
+      requestedAt: TEST_TIME,
+    });
+
+    it('shows "Request Poll" (not "Create Poll") to non-chairs while an item is current and no poll runs', () => {
+      renderQueue(runningWithItem(), otherUser);
+      expect(screen.getByRole('button', { name: 'Request Poll' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Create Poll' })).not.toBeInTheDocument();
+    });
+
+    it('shows "Create Poll" (not "Request Poll") to chairs', () => {
+      renderQueue(runningWithItem(), chairUser);
+      expect(screen.getByRole('button', { name: 'Create Poll' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Request Poll' })).not.toBeInTheDocument();
+    });
+
+    it('hides "Request Poll" while a poll is running or when no item is current', () => {
+      const { unmount } = renderQueue(
+        runningWithItem({
+          poll: { options: [], reactions: [], startTime: TEST_TIME, startChairId: 'github:alice', multiSelect: true },
+        }),
+        otherUser,
+      );
+      expect(screen.queryByRole('button', { name: 'Request Poll' })).not.toBeInTheDocument();
+      unmount();
+
+      renderQueue(runningWithItem({ current: currentOf() }), otherUser);
+      expect(screen.queryByRole('button', { name: 'Request Poll' })).not.toBeInTheDocument();
+    });
+
+    it('lists every pending request for chairs with Approve/Dismiss and emits the right events', () => {
+      const emit = vi.fn();
+      const socket = { emit } as unknown as TypedSocket;
+      const meeting = runningWithItem({
+        pollRequests: [requestFrom('r1', 'github:bob', 'Ship it?'), requestFrom('r2', 'github:alice')],
+      });
+      renderQueue(meeting, chairUser, socket);
+
+      const section = screen.getByRole('region', { name: 'Poll Requests' });
+      expect(section).toBeInTheDocument();
+      expect(screen.getByText('Ship it?')).toBeInTheDocument();
+      expect(screen.getByText('No topic')).toBeInTheDocument();
+      expect(screen.getByText('Bob')).toBeInTheDocument();
+
+      const approves = screen.getAllByRole('button', { name: 'Approve' });
+      const dismisses = screen.getAllByRole('button', { name: 'Dismiss' });
+      expect(approves).toHaveLength(2);
+      expect(dismisses).toHaveLength(2);
+      expect(screen.queryByRole('button', { name: 'Withdraw' })).not.toBeInTheDocument();
+
+      fireEvent.click(approves[0]);
+      expect(emit).toHaveBeenCalledWith('poll:approveRequest', { id: 'r1' });
+      fireEvent.click(dismisses[1]);
+      expect(emit).toHaveBeenCalledWith('poll:dismissRequest', { id: 'r2' });
+    });
+
+    it('disables Approve while a poll is already running', () => {
+      const meeting = runningWithItem({
+        pollRequests: [requestFrom('r1', 'github:bob')],
+        poll: { options: [], reactions: [], startTime: TEST_TIME, startChairId: 'github:alice', multiSelect: true },
+      });
+      renderQueue(meeting, chairUser);
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeEnabled();
+    });
+
+    it('shows a participant only their own request, with Withdraw', () => {
+      const emit = vi.fn();
+      const socket = { emit } as unknown as TypedSocket;
+      const meeting = runningWithItem({
+        pollRequests: [requestFrom('r1', 'github:bob', 'Mine'), requestFrom('r2', 'github:alice', 'Not mine')],
+      });
+      renderQueue(meeting, otherUser, socket);
+
+      expect(screen.getByText('Mine')).toBeInTheDocument();
+      expect(screen.queryByText('Not mine')).not.toBeInTheDocument();
+      expect(screen.getByText('Awaiting chair approval')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Withdraw' }));
+      expect(emit).toHaveBeenCalledWith('poll:dismissRequest', { id: 'r1' });
+    });
+
+    it('renders no Poll Requests section when a participant has no request of their own', () => {
+      const meeting = runningWithItem({ pollRequests: [requestFrom('r2', 'github:alice', 'Not mine')] });
+      renderQueue(meeting, otherUser);
+      expect(screen.queryByRole('region', { name: 'Poll Requests' })).not.toBeInTheDocument();
+    });
+
+    it('labels the setup dialog "Request poll" for non-chairs and "Create poll" for chairs', () => {
+      // jsdom doesn't expose a closed <dialog> through role queries, so
+      // read the label attribute directly.
+      const { container, unmount } = renderQueue(runningWithItem(), otherUser);
+      expect(container.querySelector('dialog[aria-label="Request poll"]')).not.toBeNull();
+      expect(container.querySelector('dialog[aria-label="Create poll"]')).toBeNull();
+      unmount();
+
+      const chair = renderQueue(runningWithItem(), chairUser);
+      expect(chair.container.querySelector('dialog[aria-label="Create poll"]')).not.toBeNull();
+      expect(chair.container.querySelector('dialog[aria-label="Request poll"]')).toBeNull();
+    });
+  });
 });

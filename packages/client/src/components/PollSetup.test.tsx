@@ -23,11 +23,16 @@ const baseMeeting: MeetingState = buildMeeting(undefined, {
   chairIds: ['github:alice'],
 });
 
-function renderSetup(socket: TypedSocket | null = null, onCancel = () => {}, onStarted = () => {}) {
+function renderSetup(
+  socket: TypedSocket | null = null,
+  onCancel = () => {},
+  onSubmitted = () => {},
+  mode: 'start' | 'request' = 'start',
+) {
   return render(
     <TestMeetingProvider meeting={baseMeeting} user={chairUser}>
       <SocketContext value={socket}>
-        <PollSetup onCancel={onCancel} onStarted={onStarted} />
+        <PollSetup mode={mode} onCancel={onCancel} onSubmitted={onSubmitted} />
       </SocketContext>
     </TestMeetingProvider>,
   );
@@ -183,5 +188,42 @@ describe('PollSetup', () => {
 
     const payload = emit.mock.calls.find((c: unknown[]) => c[0] === 'poll:start')?.[1];
     expect(payload.topic).toBeUndefined();
+  });
+
+  describe('request mode', () => {
+    it('relabels the heading and submit button', () => {
+      renderSetup(
+        null,
+        () => {},
+        () => {},
+        'request',
+      );
+
+      expect(screen.getByRole('heading', { name: 'Request Poll' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Request Poll' })).toBeInTheDocument();
+      expect(screen.queryByText('Start Poll')).not.toBeInTheDocument();
+      // Explains that nothing happens until a chair approves.
+      expect(screen.getByText(/chair will see your request/i)).toBeInTheDocument();
+    });
+
+    it('emits poll:request (not poll:start) with the same payload shape', () => {
+      const emit = vi.fn();
+      const mockSocket = { emit } as unknown as TypedSocket;
+      const onSubmitted = vi.fn();
+
+      renderSetup(mockSocket, () => {}, onSubmitted, 'request');
+
+      fireEvent.change(screen.getByLabelText('Poll topic'), { target: { value: 'Ship it?' } });
+      fireEvent.click(screen.getByLabelText(/allow selecting multiple/i));
+      fireEvent.click(screen.getByRole('button', { name: 'Request Poll' }));
+
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit).toHaveBeenCalledWith('poll:request', {
+        topic: 'Ship it?',
+        multiSelect: false,
+        options: DEFAULT_POLL_OPTIONS.map((o) => ({ emoji: o.emoji, label: o.label })),
+      });
+      expect(onSubmitted).toHaveBeenCalled();
+    });
   });
 });

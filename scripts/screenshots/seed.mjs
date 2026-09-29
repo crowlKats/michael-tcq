@@ -37,6 +37,8 @@ const DELTA_EVENTS = [
   'poll:started',
   'poll:stopped',
   'poll:reacted',
+  'poll:requested',
+  'poll:requestRemoved',
 ];
 
 /**
