@@ -44,6 +44,7 @@ import { useMeetingState, useMeetingDispatch, useIsChair } from '../contexts/Mee
 import { useSocket } from '../contexts/SocketContext.js';
 import { useAdvanceAction } from '../hooks/useAdvanceAction.js';
 import { useNativeDialog } from '../hooks/useNativeDialog.js';
+import { usePollRequestGuard, POLL_REQUEST_COOLDOWN_REASON } from '../hooks/usePollRequestGuard.js';
 import { InlineMarkdown } from './InlineMarkdown.js';
 import { SpeakerControls } from './SpeakerControls.js';
 import { UserBadge } from './UserBadge.js';
@@ -195,8 +196,22 @@ export function QueuePanel({
   // approve; requesters: revise/withdraw). Held by id so a delta that
   // removes it (another chair approved or dismissed it, or the agenda
   // advanced) closes the dialog automatically.
-  const [reviewRequestId, setReviewRequestId] = useState<string | null>(null);
-  const reviewRequest = reviewRequestId ? visiblePollRequests.find((r) => r.id === reviewRequestId) : undefined;
+  // Held as {id, requesterId} so that if the requester revises the open
+  // request (which replaces it under a new id) the dialog follows the
+  // revision — remounting the form with the new content — rather than
+  // vanishing. A request that is gone entirely closes the dialog.
+  const [review, setReview] = useState<{ id: string; requesterId: string } | null>(null);
+  const reviewRequest = review
+    ? (visiblePollRequests.find((r) => r.id === review.id) ??
+      visiblePollRequests.find((r) => r.requesterId === review.requesterId))
+    : undefined;
+  const openReview = useCallback((request: PollRequest) => {
+    setReview({ id: request.id, requesterId: request.requesterId });
+  }, []);
+  const closeReview = useCallback(() => setReview(null), []);
+
+  // Debounce + cooldown for Approve / Dismiss / Withdraw (see the hook).
+  const requestGuard = usePollRequestGuard();
 
   // Whether the "advance agenda item" confirmation modal is open
   const [showAdvanceConfirm, setShowAdvanceConfirm] = useState(false);
@@ -219,7 +234,7 @@ export function QueuePanel({
   );
   const { dialogRef: reviewDialogRef, renderContents: showReviewContents } = useNativeDialog(
     reviewRequest !== undefined,
-    () => setReviewRequestId(null),
+    closeReview,
   );
 
   const { dialogRef: activePollDialogRef, renderContents: showActivePollContents } = useNativeDialog(
@@ -595,8 +610,12 @@ export function QueuePanel({
                 request={request}
                 requester={meeting.users[request.requesterId]}
                 isChair={isChair}
-                onOpen={() => setReviewRequestId(request.id)}
-                onDismiss={() => socket?.emit('poll:dismissRequest', { id: request.id })}
+                onOpen={() => openReview(request)}
+                dismissDisabled={requestGuard.disabled}
+                dismissDisabledReason={requestGuard.coolingDown ? POLL_REQUEST_COOLDOWN_REASON : undefined}
+                onDismiss={() =>
+                  requestGuard.guard(request.id, () => socket?.emit('poll:dismissRequest', { id: request.id }))
+                }
               />
             ))}
           </ul>
@@ -923,17 +942,33 @@ export function QueuePanel({
               // A poll is a single modal for the whole room — approving a
               // second one mid-poll would silently replace the first.
               submitDisabledReason={
-                isChair && meeting.poll ? 'Stop the running poll before approving another.' : undefined
+                isChair && meeting.poll
+                  ? 'Stop the running poll before approving another.'
+                  : requestGuard.coolingDown
+                    ? POLL_REQUEST_COOLDOWN_REASON
+                    : undefined
               }
+              // Route the submit through the guard so a double-click (or a
+              // click during another user's change) can't approve twice
+              // or approve a revision the chair hasn't seen.
+              beforeSubmit={() => {
+                let allowed = false;
+                requestGuard.guard(reviewRequest.id, () => {
+                  allowed = true;
+                });
+                return allowed;
+              }}
               secondaryAction={{
                 label: isChair ? 'Dismiss request' : 'Withdraw request',
-                onClick: () => {
-                  socket?.emit('poll:dismissRequest', { id: reviewRequest.id });
-                  setReviewRequestId(null);
-                },
+                disabled: requestGuard.disabled,
+                onClick: () =>
+                  requestGuard.guard(reviewRequest.id, () => {
+                    socket?.emit('poll:dismissRequest', { id: reviewRequest.id });
+                    closeReview();
+                  }),
               }}
-              onCancel={() => setReviewRequestId(null)}
-              onSubmitted={() => setReviewRequestId(null)}
+              onCancel={() => closeReview()}
+              onSubmitted={() => closeReview()}
             />
           </Suspense>
         )}
@@ -1355,6 +1390,10 @@ interface PollRequestRowProps {
   onOpen: () => void;
   /** Dismiss (chair) or withdraw (requester) without opening it. */
   onDismiss: () => void;
+  /** Greys out Dismiss/Withdraw during the debounce/cooldown window. */
+  dismissDisabled?: boolean;
+  /** Tooltip explaining why it's disabled (cooldown only). */
+  dismissDisabledReason?: string;
 }
 
 /**
@@ -1365,7 +1404,15 @@ interface PollRequestRowProps {
  * that's where a chair reads the whole proposal and approves it. The
  * only inline action is Dismiss / Withdraw.
  */
-function PollRequestRow({ request, requester, isChair, onOpen, onDismiss }: PollRequestRowProps) {
+function PollRequestRow({
+  request,
+  requester,
+  isChair,
+  onOpen,
+  onDismiss,
+  dismissDisabled = false,
+  dismissDisabledReason,
+}: PollRequestRowProps) {
   return (
     <li className="flex items-center gap-2">
       <button
@@ -1399,8 +1446,11 @@ function PollRequestRow({ request, requester, isChair, onOpen, onDismiss }: Poll
       <button
         type="button"
         onClick={onDismiss}
+        disabled={dismissDisabled}
+        title={dismissDisabledReason}
         className="shrink-0 text-xs border border-stone-300 dark:border-stone-600 rounded px-2 py-0.5 transition-colors cursor-pointer
-                   text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800"
+                   text-stone-600 dark:text-stone-400 enabled:hover:bg-stone-100 dark:enabled:hover:bg-stone-800
+                   disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {isChair ? 'Dismiss' : 'Withdraw'}
       </button>

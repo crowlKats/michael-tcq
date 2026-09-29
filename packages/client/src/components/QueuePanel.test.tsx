@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 
 import type {
   CurrentContext,
@@ -1244,6 +1244,75 @@ describe('QueuePanel', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Withdraw' }));
       expect(emit).toHaveBeenCalledWith('poll:dismissRequest', { id: 'r1' });
+    });
+
+    it('greys out Dismiss for a beat after another user changes the request list', () => {
+      vi.useFakeTimers();
+      try {
+        const emit = vi.fn();
+        const socket = { emit } as unknown as TypedSocket;
+        const { rerender } = render(
+          <TestMeetingProvider
+            meeting={runningWithItem({ pollRequests: [requestFrom('r1', 'github:bob', 'One')] })}
+            user={chairUser}
+          >
+            <PreferencesProvider>
+              <SocketContext value={socket}>
+                <QueuePanel
+                  autoEditEntryId={null}
+                  onAddEntry={() => {}}
+                  onSavedTopic={() => {}}
+                  onAutoEditConsumed={() => {}}
+                />
+              </SocketContext>
+            </PreferencesProvider>
+          </TestMeetingProvider>,
+        );
+        expect(screen.getByRole('button', { name: 'Dismiss' })).toBeEnabled();
+
+        // Another participant's request arrives → cooldown.
+        rerender(
+          <TestMeetingProvider
+            meeting={runningWithItem({
+              pollRequests: [requestFrom('r1', 'github:bob', 'One'), requestFrom('r2', 'github:carol', 'Two')],
+            })}
+            user={chairUser}
+          >
+            <PreferencesProvider>
+              <SocketContext value={socket}>
+                <QueuePanel
+                  autoEditEntryId={null}
+                  onAddEntry={() => {}}
+                  onSavedTopic={() => {}}
+                  onAutoEditConsumed={() => {}}
+                />
+              </SocketContext>
+            </PreferencesProvider>
+          </TestMeetingProvider>,
+        );
+        act(() => {
+          vi.advanceTimersByTime(0);
+        });
+        const dismisses = screen.getAllByRole('button', { name: 'Dismiss' });
+        for (const b of dismisses) {
+          expect(b).toBeDisabled();
+          expect(b).toHaveAttribute('title', expect.stringMatching(/just changed/i));
+        }
+        fireEvent.click(dismisses[0]);
+        expect(emit).not.toHaveBeenCalled();
+
+        act(() => {
+          vi.advanceTimersByTime(2000);
+        });
+        expect(dismisses[0]).toBeEnabled();
+        fireEvent.click(dismisses[0]);
+        expect(emit).toHaveBeenCalledWith('poll:dismissRequest', { id: 'r1' });
+        // …and a rapid second click is debounced.
+        fireEvent.click(dismisses[1]);
+        expect(emit).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('renders no Poll Requests section when a participant has no request of their own', () => {

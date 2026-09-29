@@ -39,6 +39,9 @@ interface DraftOption {
 /** Counter for generating unique keys for draft options. */
 let nextKey = 0;
 
+/** Rapid repeated submits (double-click, Enter twice) within this window are ignored. */
+const SUBMIT_DEBOUNCE_MS = 400;
+
 /** Create the default set of draft options from the shared constants. */
 function createDefaults(): DraftOption[] {
   return DEFAULT_POLL_OPTIONS.map((opt) => ({
@@ -152,7 +155,13 @@ interface PollSetupProps {
    * Optional destructive secondary action rendered next to Cancel —
    * "Dismiss request" for a reviewing chair, "Withdraw" for the requester.
    */
-  secondaryAction?: { label: string; onClick: () => void };
+  secondaryAction?: { label: string; onClick: () => void; disabled?: boolean };
+  /**
+   * Called just before emitting; return `false` to swallow the submit
+   * (used by the review dialog's debounce/cooldown guard). The form's
+   * own rapid-resubmit debounce applies regardless.
+   */
+  beforeSubmit?: () => boolean;
   onCancel: () => void;
   /** Called after the form has emitted (poll started, request sent, or request approved). */
   onSubmitted: () => void;
@@ -169,9 +178,12 @@ export function PollSetup({
   requester,
   submitDisabledReason,
   secondaryAction,
+  beforeSubmit,
   onCancel,
   onSubmitted,
 }: PollSetupProps) {
+  // Ignore a second submit within this window (double-click, Enter twice).
+  const lastSubmitRef = useRef(0);
   const isRequest = mode === 'request';
   const isApprove = mode === 'approve';
 
@@ -227,6 +239,11 @@ export function PollSetup({
     const validOptions = options.filter((opt) => opt.emoji.trim() && opt.label.trim());
 
     if (validOptions.length < 2) return;
+
+    const now = Date.now();
+    if (now - lastSubmitRef.current < SUBMIT_DEBOUNCE_MS) return;
+    if (beforeSubmit && !beforeSubmit()) return;
+    lastSubmitRef.current = now;
 
     const payload = {
       topic: topic.trim() || undefined,
@@ -412,7 +429,9 @@ export function PollSetup({
           <button
             type="button"
             onClick={secondaryAction.onClick}
-            className="ml-auto text-sm text-stone-600 dark:text-stone-300 hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
+            disabled={secondaryAction.disabled}
+            className="ml-auto text-sm text-stone-600 dark:text-stone-300 enabled:hover:text-red-600 dark:enabled:hover:text-red-400 transition-colors cursor-pointer
+                       disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {secondaryAction.label}
           </button>

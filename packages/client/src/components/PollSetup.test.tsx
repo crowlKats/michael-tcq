@@ -329,6 +329,46 @@ describe('PollSetup', () => {
     });
   });
 
+  describe('submit guarding', () => {
+    it('swallows the submit when beforeSubmit returns false', () => {
+      const emit = vi.fn();
+      const onSubmitted = vi.fn();
+      renderSetup({ emit } as unknown as TypedSocket, () => {}, onSubmitted, 'approve', {
+        initial: pendingRequest,
+        beforeSubmit: () => false,
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Approve & Start Poll' }));
+      expect(emit).not.toHaveBeenCalled();
+      expect(onSubmitted).not.toHaveBeenCalled();
+    });
+
+    it('ignores a rapid second submit (double-click)', () => {
+      const emit = vi.fn();
+      renderSetup({ emit } as unknown as TypedSocket);
+      fireEvent.click(screen.getByText('Start Poll'));
+      fireEvent.click(screen.getByText('Start Poll'));
+      expect(emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('disables the secondary action when asked', () => {
+      const onClick = vi.fn();
+      renderSetup(
+        null,
+        () => {},
+        () => {},
+        'approve',
+        {
+          initial: pendingRequest,
+          secondaryAction: { label: 'Dismiss request', onClick, disabled: true },
+        },
+      );
+      const btn = screen.getByRole('button', { name: 'Dismiss request' });
+      expect(btn).toBeDisabled();
+      fireEvent.click(btn);
+      expect(onClick).not.toHaveBeenCalled();
+    });
+  });
+
   describe('request mode with an existing request (requester editing)', () => {
     it('pre-fills, relabels to Update Request, and re-emits poll:request', () => {
       const emit = vi.fn();
