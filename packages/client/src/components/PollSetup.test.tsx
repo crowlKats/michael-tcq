@@ -346,6 +346,33 @@ describe('PollSetup', () => {
     });
   });
 
+  describe('notice (e.g. revised request)', () => {
+    it('renders the notice text and action, and leaves the form contents alone', () => {
+      const onAction = vi.fn();
+      renderSetup(
+        null,
+        () => {},
+        () => {},
+        'approve',
+        {
+          initial: pendingRequest,
+          notice: {
+            text: 'The requester has revised this request since you opened it.',
+            actionLabel: 'Load revision',
+            onAction,
+          },
+          submitDisabledReason: 'Load the revision to continue.',
+        },
+      );
+      expect(screen.getByRole('status')).toHaveTextContent(/revised this request/);
+      // Snapshot still shown, not the revision.
+      expect(screen.getByLabelText('Poll topic')).toHaveValue('Ship it?');
+      expect(screen.getByRole('button', { name: 'Approve & Start Poll' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Load revision' }));
+      expect(onAction).toHaveBeenCalled();
+    });
+  });
+
   describe('submit guarding', () => {
     it('swallows the submit when beforeSubmit returns false', () => {
       const emit = vi.fn();

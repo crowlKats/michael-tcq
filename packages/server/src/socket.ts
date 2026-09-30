@@ -4,6 +4,7 @@ import type {
   AgendaItem,
   ClientToServerEvents,
   LogEntry,
+  PollRequest,
   ServerToClientEvents,
   User,
   UserKey,
@@ -200,7 +201,16 @@ export function emitFullState(
 ): void {
   const meeting = meetingManager.get(meetingId);
   if (meeting) {
-    io.to(meetingId).emit('state', decorateMeetingForClient(meeting, appSettings));
+    if (meeting.pollRequests && meeting.pollRequests.length > 0) {
+      // Pending poll requests make the snapshot viewer-specific (their
+      // content is redacted for non-chairs), so emit per socket.
+      for (const s of roomSockets(io, meetingId)) {
+        s.emit('state', decorateMeetingForClient(meeting, appSettings, getSocketUser(s)));
+      }
+    } else {
+      // Nothing viewer-specific: one room broadcast, as before.
+      io.to(meetingId).emit('state', decorateMeetingForClient(meeting, appSettings, undefined));
+    }
     // Clear after broadcasting so it only applies to the broadcast that
     // immediately follows the handler that set it. Without this, a stale
     // value could be misattributed if a future code path changes the
@@ -312,12 +322,84 @@ function stampPremium(u: User, appSettings: AppSettingsManager): User {
  * in-memory record. Non-premium users are reused by reference, so this
  * is cheap when no premium participants are present.
  */
-function decorateMeetingForClient(meeting: MeetingState, appSettings: AppSettingsManager): MeetingState {
+function decorateMeetingForClient(
+  meeting: MeetingState,
+  appSettings: AppSettingsManager,
+  viewer: SessionUser | undefined,
+): MeetingState {
   const decoratedUsers: Record<UserKey, User> = {};
   for (const [k, u] of Object.entries(meeting.users)) {
     decoratedUsers[k as UserKey] = stampPremium(u, appSettings);
   }
-  return { ...meeting, users: decoratedUsers };
+  const decorated = { ...meeting, users: decoratedUsers };
+  if (!meeting.pollRequests) return decorated;
+  return { ...decorated, pollRequests: meeting.pollRequests.map((r) => redactPollRequestFor(r, meeting, viewer)) };
+}
+
+/**
+ * Whether `viewer` may see the content (topic + options) of pending poll
+ * request `r`: chairs and the requester themselves. Everyone else gets a
+ * content-free stub — see `redactPollRequestFor`.
+ */
+function canSeePollRequest(r: PollRequest, meeting: MeetingState, viewer: SessionUser | undefined): boolean {
+  if (!viewer) return false;
+  const key = userKey(viewer);
+  return r.requesterId === key || meeting.chairIds.includes(key);
+}
+
+/**
+ * Redact a pending poll request for a viewer who isn't allowed to see it.
+ * Pending requests ride on the versioned delta stream, so non-chairs must
+ * still receive *something* under each version number to stay contiguous
+ * — but the proposed topic and options are only for chairs and the
+ * requester. Otherwise the request list would be a covert message channel
+ * between participants (nothing in the UI shows other people's requests
+ * to non-chairs, but the wire payload would). The stub keeps the id,
+ * requester and timestamp so the client reducer's per-requester
+ * replacement and by-id removal still work.
+ */
+function redactPollRequestFor(r: PollRequest, meeting: MeetingState, viewer: SessionUser | undefined): PollRequest {
+  if (canSeePollRequest(r, meeting, viewer)) return r;
+  return { id: r.id, requesterId: r.requesterId, requestedAt: r.requestedAt, multiSelect: true, options: [] };
+}
+
+/**
+ * Every socket currently in a meeting's room (synchronous; single-node
+ * adapter). Defensive about the adapter shape so callers holding a
+ * minimal `io` (some route tests) degrade to "no sockets" rather than
+ * throwing.
+ */
+function roomSockets(io: Server<ClientToServerEvents, ServerToClientEvents>, meetingId: string): TypedSocket[] {
+  const ids = io.sockets?.adapter?.rooms?.get(meetingId);
+  if (!ids) return [];
+  const out: TypedSocket[] = [];
+  for (const id of ids) {
+    const s = io.sockets.sockets.get(id);
+    if (s) out.push(s);
+  }
+  return out;
+}
+
+/**
+ * Like `emitDelta`, but the payload is computed per recipient socket so
+ * viewer-specific redaction can apply. The version is bumped exactly once
+ * and stamped on every copy, so the stream stays contiguous for everyone.
+ * Enumerates the room synchronously (no `fetchSockets` await) so no other
+ * delta can interleave between the bump and the emits.
+ */
+function emitDeltaPerSocket<E extends DeltaEventName>(
+  io: Server<ClientToServerEvents, ServerToClientEvents>,
+  meetingManager: MeetingManager,
+  meetingId: string,
+  event: E,
+  payloadFor: (viewer: SessionUser | undefined) => Omit<DeltaEventPayload<E>, 'version'>,
+): void {
+  const version = meetingManager.bumpVersion(meetingId);
+  if (version === null) return;
+  for (const s of roomSockets(io, meetingId)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (s.emit as (event: E, payload: any) => void)(event, { ...payloadFor(getSocketUser(s)), version });
+  }
 }
 
 /**
@@ -477,7 +559,7 @@ export function registerSocketHandlers(
       socket.emit('server:revision', { revision: process.env.K_REVISION ?? null });
 
       // Send the full current state to this socket only
-      socket.emit('state', decorateMeetingForClient(meeting, appSettings));
+      socket.emit('state', decorateMeetingForClient(meeting, appSettings, user));
     });
 
     // --- state:resync ---
@@ -492,7 +574,7 @@ export function registerSocketHandlers(
       const meeting = meetingManager.get(joinedMeetingId);
       if (!meeting) return;
       recordStateResync();
-      socket.emit('state', decorateMeetingForClient(meeting, appSettings));
+      socket.emit('state', decorateMeetingForClient(meeting, appSettings, user));
     });
 
     // --- meeting:updateChairs ---
@@ -541,6 +623,7 @@ export function registerSocketHandlers(
         return;
       }
 
+      const chairsBefore = new Set(meeting?.chairIds ?? []);
       meetingManager.updateChairs(joinedMeetingId, chairs);
       const updated = meetingManager.get(joinedMeetingId);
       if (!updated) return;
@@ -548,6 +631,18 @@ export function registerSocketHandlers(
         chairIds: updated.chairIds,
         users: usersRecordFor(chairs, appSettings),
       });
+      // Anyone whose chair status just changed sees pending poll requests
+      // differently (full content for chairs, stubs for everyone else), so
+      // re-send them a fresh, correctly redacted snapshot.
+      const chairsAfter = new Set(updated.chairIds);
+      for (const s of roomSockets(io, joinedMeetingId)) {
+        const viewer = getSocketUser(s);
+        if (!viewer) continue;
+        const key = userKey(viewer);
+        if (chairsBefore.has(key) !== chairsAfter.has(key)) {
+          s.emit('state', decorateMeetingForClient(updated, appSettings, viewer));
+        }
+      }
     });
 
     // --- agenda:add ---
@@ -915,7 +1010,7 @@ export function registerSocketHandlers(
           parsed.currentTopicSpeakerId === undefined || currentSpeakerId !== claimedSpeakerId;
         if (noActiveTopic || preconditionMismatch) {
           // Re-broadcast state to the stale client so it reconciles.
-          if (addMeeting) socket.emit('state', decorateMeetingForClient(addMeeting, appSettings));
+          if (addMeeting) socket.emit('state', decorateMeetingForClient(addMeeting, appSettings, user));
           const message = noActiveTopic
             ? 'No topic is currently active - you can not reply'
             : 'Topic has changed — your reply was not added';
@@ -1205,7 +1300,7 @@ export function registerSocketHandlers(
       // the server's current speaker, the view is stale.
       if (parsed.currentSpeakerEntryId !== (meeting.current.speaker?.id ?? null)) {
         // Client's view is stale — send current state so it can update
-        socket.emit('state', decorateMeetingForClient(meeting, appSettings));
+        socket.emit('state', decorateMeetingForClient(meeting, appSettings, user));
         respond({ ok: false, error: 'Speaker already advanced' });
         return;
       }
@@ -1399,12 +1494,15 @@ export function registerSocketHandlers(
 
       const meeting = meetingManager.get(joinedMeetingId);
       if (!meeting) return;
+      // Per recipient: chairs and the requester get the full request; other
+      // participants get a content-free stub (see `redactPollRequestFor`).
       // Carry the requester's User record so every client can render
       // their badge on the request row immediately.
-      emitDelta(io, meetingManager, joinedMeetingId, 'poll:requested', {
-        request,
-        users: { [request.requesterId]: meeting.users[request.requesterId] },
-      });
+      const users = { [request.requesterId]: meeting.users[request.requesterId] };
+      emitDeltaPerSocket(io, meetingManager, joinedMeetingId, 'poll:requested', (viewer) => ({
+        request: redactPollRequestFor(request, meeting, viewer),
+        users,
+      }));
     });
 
     // --- poll:approveRequest ---
@@ -1506,7 +1604,7 @@ export function registerSocketHandlers(
       const meeting = meetingManager.get(joinedMeetingId);
       if (!meeting) return;
       if (parsed.currentAgendaItemId !== (meeting.current.agendaItemId ?? null)) {
-        socket.emit('state', decorateMeetingForClient(meeting, appSettings));
+        socket.emit('state', decorateMeetingForClient(meeting, appSettings, user));
         respond({ ok: false, error: 'Another chair already advanced the agenda' });
         return;
       }

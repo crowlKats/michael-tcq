@@ -196,18 +196,18 @@ export function QueuePanel({
   // approve; requesters: revise/withdraw). Held by id so a delta that
   // removes it (another chair approved or dismissed it, or the agenda
   // advanced) closes the dialog automatically.
-  // Held as {id, requesterId} so that if the requester revises the open
-  // request (which replaces it under a new id) the dialog follows the
-  // revision — remounting the form with the new content — rather than
-  // vanishing. A request that is gone entirely closes the dialog.
-  const [review, setReview] = useState<{ id: string; requesterId: string } | null>(null);
-  const reviewRequest = review
-    ? (visiblePollRequests.find((r) => r.id === review.id) ??
-      visiblePollRequests.find((r) => r.requesterId === review.requesterId))
-    : undefined;
-  const openReview = useCallback((request: PollRequest) => {
-    setReview({ id: request.id, requesterId: request.requesterId });
-  }, []);
+  // The request open in the review dialog, snapshotted at open time. The
+  // live list may change underneath it: if the same requester revises
+  // their request (which replaces it under a new id), the dialog keeps
+  // showing the snapshot the chair was reading and offers to load the
+  // revision; if the request is gone entirely (dismissed by another
+  // chair, withdrawn, agenda advanced) the dialog closes.
+  const [review, setReview] = useState<PollRequest | null>(null);
+  const liveReviewRequest = review ? visiblePollRequests.find((r) => r.id === review.id) : undefined;
+  const reviewRevision =
+    review && !liveReviewRequest ? visiblePollRequests.find((r) => r.requesterId === review.requesterId) : undefined;
+  const reviewRequest = liveReviewRequest ?? reviewRevision;
+  const openReview = useCallback((request: PollRequest) => setReview(request), []);
   const closeReview = useCallback(() => setReview(null), []);
 
   // Debounce + cooldown for Approve / Dismiss / Withdraw (see the hook).
@@ -934,19 +934,33 @@ export function QueuePanel({
         {showReviewContents && reviewRequest && (
           <Suspense fallback={<div className="p-6 text-stone-400">Loading&hellip;</div>}>
             <PollSetup
-              // Remount per request so the form re-seeds from `initial`.
-              key={reviewRequest.id}
+              // Keyed on the snapshot so the form re-seeds only when a
+              // different request (or a loaded revision) is opened.
+              key={review!.id}
               mode={isChair ? 'approve' : 'request'}
-              initial={reviewRequest}
-              requester={meeting.users[reviewRequest.requesterId]}
+              initial={review!}
+              requester={meeting.users[review!.requesterId]}
+              notice={
+                reviewRevision
+                  ? {
+                      text: 'The requester has revised this request since you opened it.',
+                      actionLabel: 'Load revision',
+                      onAction: () => setReview(reviewRevision),
+                    }
+                  : undefined
+              }
               // A poll is a single modal for the whole room — approving a
-              // second one mid-poll would silently replace the first.
+              // second one mid-poll would silently replace the first. And a
+              // superseded snapshot can't be approved: the server no longer
+              // knows its id, and the chair hasn't read the revision.
               submitDisabledReason={
-                isChair && meeting.poll
-                  ? 'Stop the running poll before approving another.'
-                  : requestGuard.coolingDown
-                    ? POLL_REQUEST_COOLDOWN_REASON
-                    : undefined
+                reviewRevision
+                  ? 'Load the revision to continue.'
+                  : isChair && meeting.poll
+                    ? 'Stop the running poll before approving another.'
+                    : requestGuard.coolingDown
+                      ? POLL_REQUEST_COOLDOWN_REASON
+                      : undefined
               }
               // Route the submit through the guard so a double-click (or a
               // click during another user's change) can't approve twice

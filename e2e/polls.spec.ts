@@ -543,6 +543,75 @@ test.describe('Poll requests', () => {
     }
   });
 
+  test('a revision made while the chair is reviewing is offered via "Load revision", not swapped in', async ({
+    browser,
+    page,
+  }) => {
+    await setupStartedMeeting(page);
+    const second = await openSecondContext(browser, meetingIdOf(page), { asUser: 'bob' });
+    try {
+      await goToQueueTab(second.page);
+      await requestPollAs(second.page, 'First draft');
+
+      // Chair opens the review dialog on the first draft.
+      await page
+        .getByRole('region', { name: 'Poll Requests' })
+        .getByRole('button', { name: /First draft/ })
+        .click();
+      const review = page.getByRole('dialog', { name: 'Review poll request' });
+      await expect(review.getByLabel('Poll topic')).toHaveValue('First draft');
+
+      // Bob revises it from his own edit dialog.
+      await second.page
+        .getByRole('region', { name: 'Poll Requests' })
+        .getByRole('button', { name: /First draft/ })
+        .click();
+      const edit = second.page.getByRole('dialog', { name: 'Edit poll request' });
+      await edit.getByLabel('Poll topic').fill('Second draft');
+      await edit.getByRole('button', { name: 'Update Request' }).click();
+      await expect(edit).not.toBeVisible();
+
+      // Chair still sees the first draft, with a notice and Approve held.
+      await expect(review).toBeVisible();
+      await expect(review.getByLabel('Poll topic')).toHaveValue('First draft');
+      await expect(review.getByRole('status')).toContainText(/revised/i);
+      await expect(review.getByRole('button', { name: 'Approve & Start Poll' })).toBeDisabled();
+
+      // Loading the revision swaps the contents in; approval works again
+      // once the brief cooldown from the list change has passed.
+      await review.getByRole('button', { name: 'Load revision' }).click();
+      await expect(review.getByLabel('Poll topic')).toHaveValue('Second draft');
+      await expect(review.getByRole('button', { name: 'Approve & Start Poll' })).toBeEnabled({ timeout: 5000 });
+      await review.getByRole('button', { name: 'Approve & Start Poll' }).click();
+      await expect(page.getByRole('dialog', { name: 'Active poll' }).getByText('Second draft')).toBeVisible();
+    } finally {
+      await second.context.close();
+    }
+  });
+
+  test("other participants never receive the content of someone else's request", async ({ browser, page }) => {
+    await setupStartedMeeting(page);
+    const bob = await openSecondContext(browser, meetingIdOf(page), { asUser: 'bob' });
+    const carol = await openSecondContext(browser, meetingIdOf(page), { asUser: 'carol' });
+    try {
+      await goToQueueTab(bob.page);
+      await goToQueueTab(carol.page);
+      await requestPollAs(bob.page, 'Secret-ish topic text');
+
+      // The chair sees it…
+      await expect(
+        page.getByRole('region', { name: 'Poll Requests' }).getByText('Secret-ish topic text'),
+      ).toBeVisible();
+      // …Carol's page never has the text anywhere in its DOM (not even
+      // hidden), because the server redacts it before sending.
+      await expect(carol.page.getByRole('region', { name: 'Poll Requests' })).toHaveCount(0);
+      await expect(carol.page.locator('body')).not.toContainText('Secret-ish topic text');
+    } finally {
+      await bob.context.close();
+      await carol.context.close();
+    }
+  });
+
   test('a pending request survives a chair-run poll and can be approved afterwards', async ({ browser, page }) => {
     await setupStartedMeeting(page);
     const second = await openSecondContext(browser, meetingIdOf(page), { asUser: 'bob' });

@@ -1315,6 +1315,36 @@ describe('QueuePanel', () => {
       }
     });
 
+    it('keeps the review dialog open on a revision and closes it when the request is gone', () => {
+      const scene = (requests: ReturnType<typeof requestFrom>[]) => (
+        <TestMeetingProvider meeting={runningWithItem({ pollRequests: requests })} user={chairUser}>
+          <PreferencesProvider>
+            <SocketContext value={null}>
+              <QueuePanel
+                autoEditEntryId={null}
+                onAddEntry={() => {}}
+                onSavedTopic={() => {}}
+                onAutoEditConsumed={() => {}}
+              />
+            </SocketContext>
+          </PreferencesProvider>
+        </TestMeetingProvider>
+      );
+      const { container, rerender } = render(scene([requestFrom('r1', 'github:bob', 'Original')]));
+      const dialog = container.querySelector('dialog[aria-label="Review poll request"]')!;
+      fireEvent.click(screen.getByRole('button', { name: /Original/ }));
+      expect(dialog).toHaveAttribute('open');
+
+      // Bob revises: r1 is replaced by r2. The dialog stays open (the
+      // chair is offered the revision rather than having it swapped in).
+      rerender(scene([requestFrom('r2', 'github:bob', 'Revised')]));
+      expect(dialog).toHaveAttribute('open');
+
+      // Another chair dismisses r2 → nothing of Bob's remains → closes.
+      rerender(scene([]));
+      expect(dialog).not.toHaveAttribute('open');
+    });
+
     it('renders no Poll Requests section when a participant has no request of their own', () => {
       const meeting = runningWithItem({ pollRequests: [requestFrom('r2', 'github:alice', 'Not mine')] });
       renderQueue(meeting, otherUser);

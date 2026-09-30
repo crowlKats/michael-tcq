@@ -162,6 +162,13 @@ interface PollSetupProps {
    * own rapid-resubmit debounce applies regardless.
    */
   beforeSubmit?: () => boolean;
+  /**
+   * A notice shown under the header with a single action — used by the
+   * review dialog when the requester revises the request mid-review
+   * ("Load revision"). The form contents are left alone until the action
+   * is taken.
+   */
+  notice?: { text: string; actionLabel: string; onAction: () => void };
   onCancel: () => void;
   /** Called after the form has emitted (poll started, request sent, or request approved). */
   onSubmitted: () => void;
@@ -179,6 +186,7 @@ export function PollSetup({
   submitDisabledReason,
   secondaryAction,
   beforeSubmit,
+  notice,
   onCancel,
   onSubmitted,
 }: PollSetupProps) {
@@ -300,6 +308,23 @@ export function PollSetup({
           ✕
         </button>
       </div>
+      {notice && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-3 rounded border border-amber-300 dark:border-amber-700
+                     bg-amber-50 dark:bg-amber-900/30 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
+        >
+          <span className="flex-1">{notice.text}</span>
+          <button
+            type="button"
+            onClick={notice.onAction}
+            className="text-sm font-medium border border-amber-400 dark:border-amber-600 rounded px-2 py-0.5
+                       hover:bg-amber-100 dark:hover:bg-amber-800/50 transition-colors cursor-pointer"
+          >
+            {notice.actionLabel}
+          </button>
+        </div>
+      )}
       {initial && (
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-stone-600 dark:text-stone-400 mb-3">
           Requested by
