@@ -357,19 +357,40 @@ describe('PollSetup', () => {
         {
           initial: pendingRequest,
           notice: {
-            text: 'The requester has revised this request since you opened it.',
+            text: 'The requester has revised this request.',
             actionLabel: 'Load revision',
             onAction,
           },
-          submitDisabledReason: 'Load the revision to continue.',
+          approveRequestId: 'req-2',
         },
       );
       expect(screen.getByRole('status')).toHaveTextContent(/revised this request/);
       // Snapshot still shown, not the revision.
       expect(screen.getByLabelText('Poll topic')).toHaveValue('Ship it?');
-      expect(screen.getByRole('button', { name: 'Approve & Start Poll' })).toBeDisabled();
       fireEvent.click(screen.getByRole('button', { name: 'Load revision' }));
       expect(onAction).toHaveBeenCalled();
+    });
+
+    it('approves the on-screen form against the live request id', () => {
+      const emit = vi.fn();
+      renderSetup(
+        { emit } as unknown as TypedSocket,
+        () => {},
+        () => {},
+        'approve',
+        {
+          initial: pendingRequest,
+          approveRequestId: 'req-2',
+          notice: { text: 'The requester has revised this request.', actionLabel: 'Load revision', onAction: () => {} },
+        },
+      );
+      const approve = screen.getByRole('button', { name: 'Approve & Start Poll' });
+      expect(approve).toBeEnabled();
+      fireEvent.click(approve);
+      expect(emit).toHaveBeenCalledWith(
+        'poll:approveRequest',
+        expect.objectContaining({ id: 'req-2', topic: 'Ship it?' }),
+      );
     });
   });
 

@@ -147,6 +147,13 @@ interface PollSetupProps {
   /** The `initial` request's author, shown in the header when known. */
   requester?: User;
   /**
+   * The pending request id to approve in `'approve'` mode. Defaults to
+   * `initial.id`; the review dialog passes the requester's live request id
+   * when `initial` has since been superseded by a revision, so approving
+   * runs exactly what the chair sees in the form.
+   */
+  approveRequestId?: string;
+  /**
    * Disable the submit button with an explanation — e.g. while another
    * poll is already running, so a request can't be approved on top of it.
    */
@@ -183,6 +190,7 @@ export function PollSetup({
   mode = 'start',
   initial,
   requester,
+  approveRequestId,
   submitDisabledReason,
   secondaryAction,
   beforeSubmit,
@@ -265,7 +273,7 @@ export function PollSetup({
     // been approved yet, and approving sends the reviewed configuration
     // back so any chair edits are what actually runs.
     if (isApprove && initial) {
-      socket?.emit('poll:approveRequest', { id: initial.id, ...payload });
+      socket?.emit('poll:approveRequest', { id: approveRequestId ?? initial.id, ...payload });
     } else if (isRequest) {
       socket?.emit('poll:request', payload);
     } else {

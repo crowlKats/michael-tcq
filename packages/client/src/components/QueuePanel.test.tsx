@@ -1345,9 +1345,11 @@ describe('QueuePanel', () => {
       expect(dialog).not.toHaveAttribute('open');
     });
 
-    it('locks Next Speaker and queue entry Edit/Delete while the Poll Requests section shifts the layout', () => {
+    it('locks every interactive element on the Queue tab while the Poll Requests section shifts the layout', () => {
       vi.useFakeTimers();
       try {
+        const emit = vi.fn();
+        const socket = { emit } as unknown as TypedSocket;
         const entry: QueueEntry = { id: 'q1', type: 'topic', topic: 'Mine', userId: 'github:bob' };
         const scene = (pollRequests?: ReturnType<typeof requestFrom>[]) => (
           <TestMeetingProvider
@@ -1358,7 +1360,7 @@ describe('QueuePanel', () => {
             user={chairUser}
           >
             <PreferencesProvider>
-              <SocketContext value={null}>
+              <SocketContext value={socket}>
                 <QueuePanel
                   autoEditEntryId={null}
                   onAddEntry={() => {}}
@@ -1370,27 +1372,28 @@ describe('QueuePanel', () => {
           </TestMeetingProvider>
         );
         const { rerender } = render(scene());
-        const del = () => screen.getByRole('button', { name: 'Delete entry: Mine' });
-        const edit = () => screen.getByRole('button', { name: 'Edit entry: Mine' });
-        const next = () => screen.getByRole('button', { name: 'Next Speaker' });
-        expect(del()).toBeEnabled();
-        expect(next()).toBeEnabled();
+        const panel = screen.getByRole('tabpanel', { name: 'Queue' });
+        expect(panel).not.toHaveAttribute('data-interaction-locked');
 
         // A participant's request arrives: the section appears above the queue.
         rerender(scene([requestFrom('r1', 'github:carol', 'Temp check')]));
         act(() => {
           vi.advanceTimersByTime(0);
         });
-        expect(del()).toBeDisabled();
-        expect(edit()).toBeDisabled();
-        expect(next()).toBeDisabled();
+        expect(panel).toHaveAttribute('data-interaction-locked');
+
+        // One lock for everything on the tab.
+        fireEvent.click(screen.getByRole('button', { name: 'Delete entry: Mine' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Next Speaker' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Close Queue' }));
+        expect(emit).not.toHaveBeenCalled();
 
         act(() => {
           vi.advanceTimersByTime(2000);
         });
-        expect(del()).toBeEnabled();
-        expect(edit()).toBeEnabled();
-        expect(next()).toBeEnabled();
+        expect(panel).not.toHaveAttribute('data-interaction-locked');
+        fireEvent.click(screen.getByRole('button', { name: 'Delete entry: Mine' }));
+        expect(emit).toHaveBeenCalledWith('queue:remove', { id: 'q1' });
       } finally {
         vi.useRealTimers();
       }

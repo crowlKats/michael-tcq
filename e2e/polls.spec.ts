@@ -405,6 +405,17 @@ test.describe('Poll requests', () => {
     return decodeURIComponent(new URL(page.url()).pathname.split('/meeting/')[1]);
   }
 
+  /**
+   * Wait out the Queue tab's interaction lock. A request arriving (or
+   * changing) locks the whole tab for a brief cooldown, and clicks during
+   * it are swallowed by design.
+   */
+  async function waitForUnlock(page: import('@playwright/test').Page) {
+    await expect(page.getByRole('tabpanel', { name: 'Queue' })).not.toHaveAttribute('data-interaction-locked', {
+      timeout: 5000,
+    });
+  }
+
   /** As a participant, open the request form, set a topic, and submit. */
   async function requestPollAs(page: import('@playwright/test').Page, topic: string) {
     await page.getByRole('button', { name: 'Request Poll' }).click();
@@ -465,6 +476,7 @@ test.describe('Poll requests', () => {
       await expect(chairList.getByText(/bob/i).first()).toBeVisible();
       // No blind inline approve — approval happens after reviewing.
       await expect(chairList.getByRole('button', { name: 'Approve' })).toHaveCount(0);
+      await waitForUnlock(page);
       await chairList.getByRole('button', { name: /Temp check: ship it\?/ }).click();
 
       const review = page.getByRole('dialog', { name: 'Review poll request' });
@@ -514,6 +526,7 @@ test.describe('Poll requests', () => {
 
       const chairList = page.getByRole('region', { name: 'Poll Requests' });
       await expect(chairList.getByText('Please dismiss me')).toBeVisible();
+      await waitForUnlock(page);
       await chairList.getByRole('button', { name: 'Dismiss', exact: true }).click();
 
       await expect(page.getByRole('region', { name: 'Poll Requests' })).toHaveCount(0);
@@ -555,6 +568,7 @@ test.describe('Poll requests', () => {
       await requestPollAs(second.page, 'First draft');
 
       // Chair opens the review dialog on the first draft.
+      await waitForUnlock(page);
       await page
         .getByRole('region', { name: 'Poll Requests' })
         .getByRole('button', { name: /First draft/ })
@@ -572,14 +586,12 @@ test.describe('Poll requests', () => {
       await edit.getByRole('button', { name: 'Update Request' }).click();
       await expect(edit).not.toBeVisible();
 
-      // Chair still sees the first draft, with a notice and Approve held.
+      // Chair still sees the first draft, with a notice offering the revision.
       await expect(review).toBeVisible();
       await expect(review.getByLabel('Poll topic')).toHaveValue('First draft');
       await expect(review.getByRole('status')).toContainText(/revised/i);
-      await expect(review.getByRole('button', { name: 'Approve & Start Poll' })).toBeDisabled();
 
-      // Loading the revision swaps the contents in; approval works again
-      // once the brief cooldown from the list change has passed.
+      // Loading the revision swaps the contents in.
       await review.getByRole('button', { name: 'Load revision' }).click();
       await expect(review.getByLabel('Poll topic')).toHaveValue('Second draft');
       await expect(review.getByRole('button', { name: 'Approve & Start Poll' })).toBeEnabled({ timeout: 5000 });
@@ -613,11 +625,11 @@ test.describe('Poll requests', () => {
     }
   });
 
-  test("a new request briefly locks the chair's queue controls that it shifts", async ({ browser, page }) => {
+  test('a new request briefly locks the whole Queue tab for the chair', async ({ browser, page }) => {
     await setupStartedMeeting(page);
     await addQueueEntry(page, 'New Topic', 'Topic the chair might delete');
+    const panel = page.getByRole('tabpanel', { name: 'Queue' });
     const del = page.getByRole('button', { name: 'Delete entry: Topic the chair might delete' });
-    await expect(del).toBeEnabled();
 
     const second = await openSecondContext(browser, meetingIdOf(page), { asUser: 'bob' });
     try {
@@ -625,9 +637,51 @@ test.describe('Poll requests', () => {
       await requestPollAs(second.page, 'Arrives mid-click');
 
       await expect(page.getByRole('region', { name: 'Poll Requests' })).toBeVisible();
-      await expect(del).toBeDisabled();
-      // …and re-enables after the brief cooldown.
-      await expect(del).toBeEnabled({ timeout: 5000 });
+      await expect(panel).toHaveAttribute('data-interaction-locked', 'true');
+      // A click during the cooldown is swallowed: the entry survives.
+      await del.click({ force: true });
+      await expect(del).toBeVisible();
+
+      // …and interaction resumes after the brief cooldown.
+      await expect(panel).not.toHaveAttribute('data-interaction-locked', { timeout: 5000 });
+      await del.click();
+      await expect(del).toHaveCount(0);
+    } finally {
+      await second.context.close();
+    }
+  });
+
+  test('the chair can approve exactly what is on screen without loading a revision', async ({ browser, page }) => {
+    await setupStartedMeeting(page);
+    const second = await openSecondContext(browser, meetingIdOf(page), { asUser: 'bob' });
+    try {
+      await goToQueueTab(second.page);
+      await requestPollAs(second.page, 'First draft');
+
+      await waitForUnlock(page);
+      await page
+        .getByRole('region', { name: 'Poll Requests' })
+        .getByRole('button', { name: /First draft/ })
+        .click();
+      const review = page.getByRole('dialog', { name: 'Review poll request' });
+      await review.getByLabel('Poll topic').fill('Chair wording');
+
+      await second.page
+        .getByRole('region', { name: 'Poll Requests' })
+        .getByRole('button', { name: /First draft/ })
+        .click();
+      const edit = second.page.getByRole('dialog', { name: 'Edit poll request' });
+      await edit.getByLabel('Poll topic').fill('Second draft');
+      await edit.getByRole('button', { name: 'Update Request' }).click();
+
+      await expect(review.getByRole('status')).toContainText(/revised/i);
+      await expect(review.getByLabel('Poll topic')).toHaveValue('Chair wording');
+      const approve = review.getByRole('button', { name: 'Approve & Start Poll' });
+      await expect(approve).toBeEnabled({ timeout: 5000 });
+      await approve.click();
+
+      await expect(page.getByRole('dialog', { name: 'Active poll' }).getByText('Chair wording')).toBeVisible();
+      await expect(page.getByRole('region', { name: 'Poll Requests' })).toHaveCount(0);
     } finally {
       await second.context.close();
     }
@@ -642,6 +696,7 @@ test.describe('Poll requests', () => {
 
       // Chair starts their own poll directly. The (non-dismissable) poll
       // modal sits on top, so the request can't be reviewed meanwhile.
+      await waitForUnlock(page);
       await page.getByRole('button', { name: 'Create Poll' }).click();
       await page.getByRole('dialog', { name: 'Create poll' }).getByRole('button', { name: 'Start Poll' }).click();
       const active = page.getByRole('dialog', { name: 'Active poll' });
@@ -654,6 +709,7 @@ test.describe('Poll requests', () => {
         .getByRole('region', { name: 'Poll Requests' })
         .getByRole('button', { name: /Queued behind a running poll/ });
       await expect(summary).toBeVisible();
+      await waitForUnlock(page);
       await summary.click();
       const review = page.getByRole('dialog', { name: 'Review poll request' });
       await review.getByRole('button', { name: 'Approve & Start Poll' }).click();
