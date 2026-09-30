@@ -2141,84 +2141,129 @@ describe('Socket.IO integration', () => {
     });
   });
 
-  describe('poll request redaction for non-chairs', () => {
-    const chairUser = githubUser({ id: 999, login: 'chairperson', name: 'Chair', organisation: '' });
-    const other = githubUser({ id: 42, login: 'asker', name: 'Asker', organisation: '' });
+  describe('poll request visibility (chairs and requester only)', () => {
+    // A second server whose session user is chosen per connection via a
+    // `?as=` handshake query, so several distinct users can share a room.
+    const chair = githubUser({ id: 999, login: 'chairperson', name: 'Chair', organisation: '' });
+    const asker = githubUser({ id: 42, login: 'asker', name: 'Asker', organisation: '' });
+    const bystander = githubUser({ id: 43, login: 'bystander', name: 'Bystander', organisation: '' });
+    const byName: Record<string, User> = { chair, asker, bystander };
 
-    it("sends a non-chair only a content-free stub of someone else's request (join state + delta)", async () => {
-      const meeting = ctx.meetingManager.create([chairUser]);
-      ctx.meetingManager.requestPoll(meeting.id, samplePollOptions, other, 'Secret topic', false);
+    let multi: {
+      httpServer: HttpServer;
+      io: SocketIOServer<ClientToServerEvents, ServerToClientEvents>;
+      mgr: MeetingManager;
+      url: string;
+    };
+    const multiClients: TypedClientSocket[] = [];
 
-      // Join as TEST_USER (not a chair): the snapshot is redacted.
-      const client = makeClient();
-      const statePromise = waitForEvent<MeetingState>(client, 'state');
-      await new Promise<void>((r) => client.on('connect', r));
-      client.emit('join', meeting.id);
-      const state = await statePromise;
-      expect(state.pollRequests).toHaveLength(1);
-      const stub = state.pollRequests![0];
-      expect(stub.requesterId).toBe(userKey(other));
-      expect(stub.topic).toBeUndefined();
-      expect(stub.options).toEqual([]);
-      // Server-side state is untouched.
-      expect(ctx.meetingManager.get(meeting.id)!.pollRequests![0].topic).toBe('Secret topic');
-
-      // A later request from someone else arrives redacted too. (All test
-      // sockets share one session user, so drive it through the manager
-      // and the server\'s own emit path: another socket of TEST_USER
-      // requesting would be "own" and unredacted — covered below.)
-      const deltaPromise = waitForEvent<{ request: { topic?: string; options: unknown[]; requesterId: string } }>(
-        client,
-        'poll:requested',
-      );
-      // Simulate another participant\'s request by having TEST_USER request,
-      // then checking the *self* case separately. Here we instead assert the
-      // delta path via a second server-side request emitted through a
-      // chair socket in the next test.
-      client.emit('poll:request', { options: samplePollOptions, topic: 'My own' });
-      const delta = await deltaPromise;
-      expect(delta.request.requesterId).toBe(userKey(TEST_USER));
-      expect(delta.request.topic).toBe('My own');
-      expect(delta.request.options).toHaveLength(2);
+    beforeEach(async () => {
+      const app = express();
+      const httpServer = createServer(app);
+      const sessionMiddleware = session({ secret: 'test-secret', resave: false, saveUninitialized: false });
+      const pickUser: express.RequestHandler = (req, _res, next) => {
+        const as = new URL(req.url ?? '', 'http://x').searchParams.get('as') ?? 'chair';
+        req.session.user = toSessionUser(byName[as]);
+        next();
+      };
+      app.use(sessionMiddleware);
+      app.use(pickUser);
+      const mgr = new MeetingManager(new InMemoryStore());
+      const io = new SocketIOServer<ClientToServerEvents, ServerToClientEvents>(httpServer, {
+        cors: { origin: '*', credentials: true },
+        parser: msgpackParser,
+      });
+      io.engine.use(sessionMiddleware);
+      io.engine.use(pickUser);
+      registerSocketHandlers(io, mgr, new AppSettingsManager(new InMemoryAppSettingsStore()));
+      await new Promise<void>((r) => httpServer.listen(0, r));
+      const addr = httpServer.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      multi = { httpServer, io, mgr, url: `http://localhost:${port}` };
     });
 
-    it('sends chairs the full request', async () => {
-      const meeting = ctx.meetingManager.create([TEST_USER]);
-      ctx.meetingManager.requestPoll(meeting.id, samplePollOptions, other, 'Secret topic', false);
-      const client = makeClient();
-      const statePromise = waitForEvent<MeetingState>(client, 'state');
-      await new Promise<void>((r) => client.on('connect', r));
-      client.emit('join', meeting.id);
-      const state = await statePromise;
-      expect(state.pollRequests![0].topic).toBe('Secret topic');
-      expect(state.pollRequests![0].options.map((o) => o.label)).toEqual(['Love', 'Like']);
+    afterEach(async () => {
+      for (const c of multiClients.splice(0)) c.disconnect();
+      multi.io.close();
+      await new Promise<void>((r) => multi.httpServer.close(() => r()));
     });
 
-    it('re-sends a full snapshot when a user becomes (or stops being) a chair', async () => {
-      vi.stubEnv('ADMIN_USERNAMES', 'testuser');
-      try {
-        const meeting = ctx.meetingManager.create([chairUser]);
-        ctx.meetingManager.requestPoll(meeting.id, samplePollOptions, other, 'Secret topic', false);
-        const client = await joinMeeting(meeting.id);
+    /** Connect as `who`, join, and resolve with the initial snapshot. */
+    async function joinAs(who: string, meetingId: string): Promise<{ socket: TypedClientSocket; state: MeetingState }> {
+      const socket = ioClient(multi.url, {
+        reconnection: false,
+        transports: ['websocket'],
+        parser: msgpackParser,
+        query: { as: who },
+      }) as TypedClientSocket;
+      multiClients.push(socket);
+      await new Promise<void>((r) => socket.on('connect', r));
+      const statePromise = waitForEvent<MeetingState>(socket, 'state');
+      socket.emit('join', meetingId);
+      return { socket, state: await statePromise };
+    }
 
-        // Promote self (admin path). Expect chairs:updated, then a fresh
-        // `state` for this socket with the request unredacted.
-        let statePromise = waitForEvent<MeetingState>(client, 'state');
-        client.emit('meeting:updateChairs', { chairs: [{ handle: 'chairperson' }, { handle: 'testuser' }] });
-        let state = await statePromise;
-        expect(state.chairIds).toContain(userKey(TEST_USER));
-        expect(state.pollRequests![0].topic).toBe('Secret topic');
+    /** Record every poll-request event a socket receives. */
+    function recordRequestEvents(socket: TypedClientSocket): string[] {
+      const seen: string[] = [];
+      socket.on('poll:requested', () => seen.push('poll:requested'));
+      socket.on('poll:requestRemoved', () => seen.push('poll:requestRemoved'));
+      return seen;
+    }
 
-        // Demote self again: the re-sent snapshot is redacted.
-        statePromise = waitForEvent<MeetingState>(client, 'state');
-        client.emit('meeting:updateChairs', { chairs: [{ handle: 'chairperson' }] });
-        state = await statePromise;
-        expect(state.chairIds).not.toContain(userKey(TEST_USER));
-        expect(state.pollRequests![0].topic).toBeUndefined();
-        expect(state.pollRequests![0].options).toEqual([]);
-      } finally {
-        vi.unstubAllEnvs();
-      }
+    it('sends requests to chairs and the requester, and nothing at all to other participants', async () => {
+      const meeting = multi.mgr.create([chair]);
+      const c = await joinAs('chair', meeting.id);
+      const a = await joinAs('asker', meeting.id);
+      const b = await joinAs('bystander', meeting.id);
+      const bystanderSaw = recordRequestEvents(b.socket);
+      const versionBefore = multi.mgr.get(meeting.id)!.operational.version;
+
+      const chairGot = waitForEvent<{ request: { topic?: string } }>(c.socket, 'poll:requested');
+      const askerGot = waitForEvent<{ request: { topic?: string } }>(a.socket, 'poll:requested');
+      a.socket.emit('poll:request', { options: samplePollOptions, topic: 'Secret topic' });
+      expect((await chairGot).request.topic).toBe('Secret topic');
+      expect((await askerGot).request.topic).toBe('Secret topic');
+
+      // Not a versioned delta, so no one sees a version gap.
+      expect(multi.mgr.get(meeting.id)!.operational.version).toBe(versionBefore);
+
+      // A fresh joiner who isn't a chair gets no pollRequests key at all.
+      const late = await joinAs('bystander', meeting.id);
+      expect('pollRequests' in late.state).toBe(false);
+      // The chair and requester see it in their snapshots.
+      expect((await joinAs('chair', meeting.id)).state.pollRequests?.[0].topic).toBe('Secret topic');
+      expect((await joinAs('asker', meeting.id)).state.pollRequests?.[0].topic).toBe('Secret topic');
+
+      // Removal is scoped the same way.
+      const id = multi.mgr.get(meeting.id)!.pollRequests![0].id;
+      const chairRemoved = waitForEvent<{ id: string }>(c.socket, 'poll:requestRemoved');
+      const askerRemoved = waitForEvent<{ id: string }>(a.socket, 'poll:requestRemoved');
+      c.socket.emit('poll:dismissRequest', { id });
+      expect((await chairRemoved).id).toBe(id);
+      expect((await askerRemoved).id).toBe(id);
+
+      // Give any stray emit a moment to arrive, then assert the bystander got nothing.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(bystanderSaw).toEqual([]);
+    });
+
+    it('re-sends a filtered snapshot when someone becomes or stops being a chair', async () => {
+      const meeting = multi.mgr.create([chair]);
+      multi.mgr.requestPoll(meeting.id, samplePollOptions, asker, 'Secret topic', false);
+      const c = await joinAs('chair', meeting.id);
+      const b = await joinAs('bystander', meeting.id);
+      expect('pollRequests' in b.state).toBe(false);
+
+      let promoted = waitForEvent<MeetingState>(b.socket, 'state');
+      c.socket.emit('meeting:updateChairs', { chairs: [{ handle: 'chairperson' }, { handle: 'bystander' }] });
+      let state = await promoted;
+      expect(state.pollRequests?.[0].topic).toBe('Secret topic');
+
+      promoted = waitForEvent<MeetingState>(b.socket, 'state');
+      c.socket.emit('meeting:updateChairs', { chairs: [{ handle: 'chairperson' }] });
+      state = await promoted;
+      expect('pollRequests' in state).toBe(false);
     });
   });
 
@@ -3646,9 +3691,22 @@ describe('Socket.IO integration', () => {
         driver.emit('poll:stop');
       });
 
+      // Poll-request events are unversioned (chairs + requester only), so
+      // those steps wait for the surrogate's next event rather than a
+      // version bump. The driver and observer share the chair session, so
+      // the observer receives them.
+      async function runUnversionedStep(label: string, emit: () => void) {
+        const marker = surrogate.events.length;
+        emit();
+        await surrogate.waitForNextEvent(marker);
+        expect(normalise(surrogate.state), `divergence after step "${label}"`).toEqual(
+          normalise(ctx.meetingManager.get(meeting.id)!),
+        );
+      }
+
       // --- poll:requested (the driver is a chair, but requesting is
       // open to everyone — the reducer path is identical) ---
-      await runStep('poll:requested', driver, surrogate, meeting.id, () => {
+      await runUnversionedStep('poll:requested', () => {
         driver.emit('poll:request', {
           options: [
             { emoji: '👍', label: 'Yes' },
@@ -3660,7 +3718,7 @@ describe('Socket.IO integration', () => {
       });
 
       // --- poll:requested (replacement by the same requester) ---
-      await runStep('poll:requested (replace)', driver, surrogate, meeting.id, () => {
+      await runUnversionedStep('poll:requested (replace)', () => {
         driver.emit('poll:request', {
           options: [
             { emoji: '👍', label: 'Yes' },
@@ -3670,13 +3728,13 @@ describe('Socket.IO integration', () => {
       });
 
       // --- poll:requestRemoved ---
-      await runStep('poll:requestRemoved', driver, surrogate, meeting.id, () => {
+      await runUnversionedStep('poll:requestRemoved', () => {
         const id = ctx.meetingManager.get(meeting.id)!.pollRequests![0].id;
         driver.emit('poll:dismissRequest', { id });
       });
 
       // --- poll:started via approval (carries requestId; consumes the request) ---
-      await runStep('poll:requested (for approval)', driver, surrogate, meeting.id, () => {
+      await runUnversionedStep('poll:requested (for approval)', () => {
         driver.emit('poll:request', {
           options: [
             { emoji: '👍', label: 'Yes' },
@@ -3694,7 +3752,7 @@ describe('Socket.IO integration', () => {
       });
 
       // --- poll:requested (left pending so agenda:advanced clears it) ---
-      await runStep('poll:requested (pending across advance)', driver, surrogate, meeting.id, () => {
+      await runUnversionedStep('poll:requested (pending across advance)', () => {
         driver.emit('poll:request', {
           options: [
             { emoji: '👍', label: 'Yes' },
@@ -3741,10 +3799,11 @@ describe('Socket.IO integration', () => {
       observerSocket.disconnect();
 
       // Final sanity: the version cursor advanced exactly once per
-      // mutation step. 34 mutations were emitted above (23 original +
-      // 2 prologue + 2 epilogue + 7 poll-request steps); the bootstrap
-      // `state` doesn't bump the counter, so the surrogate ends at 34.
-      expect(surrogate.lastSeenVersion).toBe(34);
+      // versioned mutation step. 29 were emitted above (23 original + 2
+      // prologue + 2 epilogue + the approved poll's start/stop); the 5
+      // poll-request steps are unversioned, and the bootstrap `state`
+      // doesn't bump the counter, so the surrogate ends at 29.
+      expect(surrogate.lastSeenVersion).toBe(29);
     });
   });
 

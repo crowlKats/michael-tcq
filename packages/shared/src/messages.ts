@@ -166,16 +166,28 @@ export type AgendaAdvancedDelta = DeltaEnvelope & {
 export type PollStartedDelta = DeltaEnvelope & { poll: ActivePoll; requestId?: string };
 
 /**
- * Payload for `poll:requested` — a participant proposed a poll. Replaces
- * any earlier pending request from the same requester (one per user).
+ * Payload for `poll:requested` — a participant proposed (or revised) a
+ * poll. Replaces any earlier pending request from the same requester.
+ *
+ * Not a versioned delta: pending requests are only ever sent to the
+ * meeting's chairs and to the requester, so they can't sit on the
+ * room-wide version sequence without leaving gaps for everyone else.
+ * Non-chairs never receive other participants' requests at all — not even
+ * that one exists — so the list can't be used as a side channel.
  */
-export type PollRequestedDelta = DeltaEnvelope & { request: PollRequest };
+export interface PollRequestedEvent {
+  request: PollRequest;
+  users?: Record<UserKey, User>;
+}
 
 /**
  * Payload for `poll:requestRemoved` — a pending request was dismissed by
- * a chair or withdrawn by its requester.
+ * a chair or withdrawn by its requester. Not versioned; same audience as
+ * `poll:requested`.
  */
-export type PollRequestRemovedDelta = DeltaEnvelope & { id: string };
+export interface PollRequestRemovedEvent {
+  id: string;
+}
 
 /** Payload for `poll:stopped`. */
 export type PollStoppedDelta = DeltaEnvelope;
@@ -733,8 +745,9 @@ export interface ServerToClientEvents {
   'poll:started': (delta: PollStartedDelta) => void;
   'poll:stopped': (delta: PollStoppedDelta) => void;
   'poll:reacted': (delta: PollReactedDelta) => void;
-  'poll:requested': (delta: PollRequestedDelta) => void;
-  'poll:requestRemoved': (delta: PollRequestRemovedDelta) => void;
+  // ---- Unversioned, audience-scoped (chairs + requester only) ----
+  'poll:requested': (event: PollRequestedEvent) => void;
+  'poll:requestRemoved': (event: PollRequestRemovedEvent) => void;
 }
 
 /** Events clients send to the server. */

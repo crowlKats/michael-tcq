@@ -145,13 +145,20 @@ describe('usePollRequestGuard', () => {
     expect(result.current.coolingDown).toBe(false);
   });
 
-  it("does not cool down for changes to the current user's own request", () => {
+  it('does not cool down when the current user files, revises, or withdraws their own request', () => {
     const { result, setMeeting } = setup(makeMeeting([request('r1', 'github:bob')]));
-    // Alice files, revises, then withdraws her own request.
+    // Alice files, revises (old id out, new id in), then withdraws via the guard.
     setMeeting(makeMeeting([request('r1', 'github:bob'), request('a1', 'github:alice')]));
     setMeeting(makeMeeting([request('r1', 'github:bob'), request('a2', 'github:alice')]));
+    act(() => result.current.guard('a2', () => {}));
     setMeeting(makeMeeting([request('r1', 'github:bob')]));
     expect(result.current.coolingDown).toBe(false);
+  });
+
+  it("cools down when a chair dismisses the current user's own request (their layout shifts)", () => {
+    const { result, setMeeting } = setup(makeMeeting([request('a1', 'github:alice')]));
+    setMeeting(makeMeeting(undefined));
+    expect(result.current.coolingDown).toBe(true);
   });
 
   it('cools down when the list is cleared by an agenda advance', () => {

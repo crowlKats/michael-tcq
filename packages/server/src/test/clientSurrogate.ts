@@ -40,6 +40,8 @@
 import type { Socket as ClientSocket } from 'socket.io-client';
 import {
   applyDelta,
+  applyPollRequested,
+  applyPollRequestRemoved,
   type ClientToServerEvents,
   type MeetingDeltaAction,
   type MeetingState,
@@ -72,8 +74,6 @@ const DELTA_EVENT_TYPES = [
   'poll:started',
   'poll:stopped',
   'poll:reacted',
-  'poll:requested',
-  'poll:requestRemoved',
 ] as const satisfies readonly MeetingDeltaAction['type'][];
 
 type DeltaEventName = (typeof DELTA_EVENT_TYPES)[number];
@@ -219,6 +219,21 @@ export function createClientSurrogate(socket: TypedClientSocket, options: Surrog
     notifyWaiters();
   }
   socket.on('state', handleState);
+
+  // Unversioned, audience-scoped poll-request events (mirrors the real
+  // client). They don't advance the version cursor.
+  function handlePollRequested(event: Parameters<ServerToClientEvents['poll:requested']>[0]) {
+    if (state) state = applyPollRequested(state, event);
+    events.push({ event: 'poll:requested', version: null });
+    notifyWaiters();
+  }
+  function handlePollRequestRemoved(event: Parameters<ServerToClientEvents['poll:requestRemoved']>[0]) {
+    if (state) state = applyPollRequestRemoved(state, event);
+    events.push({ event: 'poll:requestRemoved', version: null });
+    notifyWaiters();
+  }
+  socket.on('poll:requested', handlePollRequested);
+  socket.on('poll:requestRemoved', handlePollRequestRemoved);
 
   /**
    * The "real" per-delta logic — applied once a delta has cleared all
@@ -378,6 +393,8 @@ export function createClientSurrogate(socket: TypedClientSocket, options: Surrog
     },
     detach() {
       socket.off('state', handleState);
+      socket.off('poll:requested', handlePollRequested);
+      socket.off('poll:requestRemoved', handlePollRequestRemoved);
       for (const { event, listener } of deltaListeners) {
         socket.off(event, listener);
       }

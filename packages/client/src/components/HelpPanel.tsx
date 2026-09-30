@@ -118,12 +118,11 @@ export function HelpPanel({ showChairHelp, hidden = false }: { showChairHelp: bo
           select multiple options or only one. Hover over a button to see who else has reacted.
         </p>
         <p className="text-sm text-stone-600 dark:text-stone-400 mb-3">
-          You can also propose a poll yourself: click <strong>Request Poll</strong> in the agenda item section, set up
-          the topic and options exactly as you'd like them, and submit. Your request appears for the chairs, who can
-          start it as-is with one click or dismiss it. Until a chair approves it, nothing changes for anyone else. Your
-          pending request is listed under the agenda item with a <strong>Withdraw</strong> button; click it to reopen
-          the form and revise it. Sending a new request replaces your earlier one, and requests are cleared when the
-          agenda moves on.
+          You can also propose a poll: click <strong>Request Poll</strong> in the agenda item section, set up the topic
+          and options, and submit. Only you and the chairs can see your request. A chair reviews it, may edit it, and
+          either starts it or dismisses it. Click your request under the agenda item to revise it, or use{' '}
+          <strong>Withdraw</strong> to remove it. Sending a new request replaces your earlier one, and requests are
+          cleared when the agenda moves on.
         </p>
 
         <h4 className="font-medium text-stone-700 dark:text-stone-300 mt-4 mb-1">Meeting Log</h4>
@@ -337,13 +336,11 @@ export function HelpPanel({ showChairHelp, hidden = false }: { showChairHelp: bo
             </li>
           </ol>
           <p className="text-sm text-stone-600 dark:text-stone-400 mb-3">
-            Participants can also <strong>request</strong> a poll. Their proposal appears in a{' '}
-            <strong>Poll Requests</strong> list under the agenda item, visible to chairs. Click a request to open it in
-            the poll setup form with everything pre-filled — read the full topic and options, change anything you like,
-            then click <strong>Approve &amp; Start Poll</strong> (the log notes who requested it) or{' '}
-            <strong>Dismiss request</strong>. There is also an inline <strong>Dismiss</strong> on each row. A running
-            poll must be stopped before a request can be approved. Requests are cleared automatically when you advance
-            to the next agenda item.
+            Participants can also <strong>request</strong> a poll. Pending requests appear in a{' '}
+            <strong>Poll Requests</strong> list under the agenda item. Click one to open it in the poll setup form, edit
+            it if needed, then click <strong>Approve &amp; Start Poll</strong> (the log notes who requested it) or{' '}
+            <strong>Dismiss request</strong>. Each row also has an inline <strong>Dismiss</strong>. A running poll must
+            be stopped before a request can be approved. Requests are cleared when you advance to the next agenda item.
           </p>
 
           <h4 className="font-medium text-stone-700 dark:text-stone-300 mt-4 mb-1">Meeting Retention</h4>

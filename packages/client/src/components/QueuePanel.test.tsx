@@ -1345,6 +1345,57 @@ describe('QueuePanel', () => {
       expect(dialog).not.toHaveAttribute('open');
     });
 
+    it('locks Next Speaker and queue entry Edit/Delete while the Poll Requests section shifts the layout', () => {
+      vi.useFakeTimers();
+      try {
+        const entry: QueueEntry = { id: 'q1', type: 'topic', topic: 'Mine', userId: 'github:bob' };
+        const scene = (pollRequests?: ReturnType<typeof requestFrom>[]) => (
+          <TestMeetingProvider
+            meeting={runningWithItem({
+              queue: queueOf({ q1: entry }, ['q1']),
+              ...(pollRequests ? { pollRequests } : {}),
+            })}
+            user={chairUser}
+          >
+            <PreferencesProvider>
+              <SocketContext value={null}>
+                <QueuePanel
+                  autoEditEntryId={null}
+                  onAddEntry={() => {}}
+                  onSavedTopic={() => {}}
+                  onAutoEditConsumed={() => {}}
+                />
+              </SocketContext>
+            </PreferencesProvider>
+          </TestMeetingProvider>
+        );
+        const { rerender } = render(scene());
+        const del = () => screen.getByRole('button', { name: 'Delete entry: Mine' });
+        const edit = () => screen.getByRole('button', { name: 'Edit entry: Mine' });
+        const next = () => screen.getByRole('button', { name: 'Next Speaker' });
+        expect(del()).toBeEnabled();
+        expect(next()).toBeEnabled();
+
+        // A participant's request arrives: the section appears above the queue.
+        rerender(scene([requestFrom('r1', 'github:carol', 'Temp check')]));
+        act(() => {
+          vi.advanceTimersByTime(0);
+        });
+        expect(del()).toBeDisabled();
+        expect(edit()).toBeDisabled();
+        expect(next()).toBeDisabled();
+
+        act(() => {
+          vi.advanceTimersByTime(2000);
+        });
+        expect(del()).toBeEnabled();
+        expect(edit()).toBeEnabled();
+        expect(next()).toBeEnabled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('renders no Poll Requests section when a participant has no request of their own', () => {
       const meeting = runningWithItem({ pollRequests: [requestFrom('r2', 'github:alice', 'Not mine')] });
       renderQueue(meeting, otherUser);

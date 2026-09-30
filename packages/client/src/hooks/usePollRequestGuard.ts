@@ -1,21 +1,24 @@
 /**
- * Double-action protection for poll-request actions (Approve, Dismiss,
- * Withdraw), mirroring `useAdvanceAction`'s two layers for Next Speaker /
- * Next Agenda Item:
+ * Protection against acting on the wrong thing when the Poll Requests
+ * section changes under the user, mirroring `useAdvanceAction`'s two
+ * layers for Next Speaker / Next Agenda Item:
  *
- * - **Debounce** (DEBOUNCE_MS): rapid repeated fires are ignored, and
- *   `disabled` is true for the window so the button visibly greys out.
- * - **Cooldown** (COOLDOWN_MS): when the pending-request list changes by
- *   someone *else's* hand — a request was added, replaced (the requester
- *   revised it, which gives it a new id), or removed by another chair or
- *   by the agenda advancing — the actions are disabled for a beat. Without
- *   it a chair can approve or dismiss the wrong request when rows shift
- *   under the cursor, or approve a revision they haven't actually read.
- *   Changes we caused ourselves (a dismiss/approve we fired, or our own
- *   request) skip the cooldown; the debounce already covers those.
+ * - **Debounce** (DEBOUNCE_MS): rapid repeated poll-request actions
+ *   (Approve, Dismiss, Withdraw) are ignored, and `disabled` is true for
+ *   the window so the buttons visibly grey out.
+ * - **Cooldown** (COOLDOWN_MS): when the visible pending-request list
+ *   changes by someone *else's* hand — a request added, revised (a new id
+ *   from the same requester), or removed by a chair or an agenda advance —
+ *   `coolingDown` is true for a beat. The Poll Requests section sits above
+ *   the speaker and queue controls, so any change to it shifts Next
+ *   Speaker and every queue entry's Edit/Delete down or up the page. The
+ *   caller disables those controls (and the poll-request actions
+ *   themselves) while cooling down, so a chair can't hit the wrong
+ *   Delete because a request just came in.
  *
- * `guard(id, fn)` runs `fn` unless the guard is active, and remembers `id`
- * as "ours" so its disappearance from the list doesn't trigger a cooldown.
+ *   Changes we caused ourselves don't cool down: a dismiss/approve/
+ *   withdraw we fired through `guard`, our own new or revised request,
+ *   and requests cleared by an agenda advance we triggered.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,12 +29,15 @@ const DEBOUNCE_MS = 400;
 const COOLDOWN_MS = 2000;
 
 /** User-facing explanation shown next to disabled actions while cooling down. */
-export const POLL_REQUEST_COOLDOWN_REASON = 'Poll requests just changed — check the list before continuing.';
+export const POLL_REQUEST_COOLDOWN_REASON = 'Poll requests just changed';
 
 export interface PollRequestGuard {
   /** True while the debounce or cooldown window is active. */
   disabled: boolean;
-  /** True specifically because of a cooldown (someone else changed the list). */
+  /**
+   * True during the cooldown after someone else changed the visible list.
+   * Callers disable layout-sensitive controls below the list while set.
+   */
   coolingDown: boolean;
   /** Run `fn` for request `id` unless the guard is active. */
   guard: (id: string, fn: () => void) => void;
@@ -41,6 +47,8 @@ export function usePollRequestGuard(): PollRequestGuard {
   const { meeting, user } = useMeetingState();
   const pollRequests = meeting?.pollRequests;
   const me = user ? userKey(user) : null;
+  const agendaItemId = meeting?.current.agendaItemId;
+  const lastAdvancementBy = meeting?.operational.lastAdvancementBy;
 
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [debounceActive, setDebounceActive] = useState(false);
@@ -55,27 +63,29 @@ export function usePollRequestGuard(): PollRequestGuard {
   // Previous snapshot of the list: id → requesterId. `undefined` until the
   // first state is seen so the initial load never triggers a cooldown.
   const prevRef = useRef<Map<string, string> | undefined>(undefined);
+  const prevAgendaItemRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const prev = prevRef.current;
+    const prevAgendaItem = prevAgendaItemRef.current;
     const next = new Map((pollRequests ?? []).map((r) => [r.id, r.requesterId] as const));
     prevRef.current = next;
+    prevAgendaItemRef.current = agendaItemId;
     if (prev === undefined) return;
 
-    let foreignChange = false;
-    for (const [id, requesterId] of prev) {
-      if (next.has(id)) continue;
-      if (ownRemovalsRef.current.delete(id)) continue; // we removed it
-      if (requesterId === me) continue; // our own request (we withdrew/replaced it)
+    const added = [...next].filter(([id]) => !prev.has(id));
+    const removed = [...prev].filter(([id]) => !next.has(id));
+    // We replaced our own request if one of ours left and one of ours arrived.
+    const ownReplacement = added.some(([, r]) => r === me) && removed.some(([, r]) => r === me);
+    // Requests cleared as part of an agenda advance we triggered.
+    const selfAdvanced = agendaItemId !== prevAgendaItem && me !== null && lastAdvancementBy === me;
+
+    let foreignChange = added.some(([, requesterId]) => requesterId !== me);
+    for (const [id, requesterId] of removed) {
+      if (ownRemovalsRef.current.delete(id)) continue; // we dismissed/approved/withdrew it
+      if (requesterId === me && ownReplacement) continue; // we revised it
+      if (selfAdvanced) continue;
       foreignChange = true;
-    }
-    if (!foreignChange) {
-      for (const [id, requesterId] of next) {
-        if (prev.has(id)) continue;
-        if (requesterId === me) continue; // our own new/revised request
-        foreignChange = true;
-        break;
-      }
     }
     if (!foreignChange) return;
 
@@ -87,7 +97,7 @@ export function usePollRequestGuard(): PollRequestGuard {
       setCooldownUntil((cur) => Math.max(cur, deadline));
     }, 0);
     pendingTimersRef.current.add(timer);
-  }, [pollRequests, me]);
+  }, [pollRequests, me, agendaItemId, lastAdvancementBy]);
 
   // Single timer that ends the cooldown; keyed on the deadline so an
   // extended window reschedules and unrelated renders leave it alone.

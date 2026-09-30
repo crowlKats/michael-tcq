@@ -242,8 +242,8 @@ describe('PollSetup', () => {
       expect(screen.getByRole('heading', { name: 'Request Poll' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Request Poll' })).toBeInTheDocument();
       expect(screen.queryByText('Start Poll')).not.toBeInTheDocument();
-      // Explains that nothing happens until a chair approves.
-      expect(screen.getByText(/chair will see your request/i)).toBeInTheDocument();
+      // No explanatory prose in the dialog.
+      expect(screen.queryByText(/chair will see your request/i)).not.toBeInTheDocument();
     });
 
     it('emits poll:request (not poll:start) with the same payload shape', () => {

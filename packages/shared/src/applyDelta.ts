@@ -20,8 +20,8 @@ import type {
   AgendaReorderedDelta,
   ChairsUpdatedDelta,
   PollReactedDelta,
-  PollRequestRemovedDelta,
-  PollRequestedDelta,
+  PollRequestRemovedEvent,
+  PollRequestedEvent,
   PollStartedDelta,
   PollStoppedDelta,
   QueueAddedDelta,
@@ -55,9 +55,7 @@ export type MeetingDeltaAction =
   | { type: 'agenda:advanced'; delta: AgendaAdvancedDelta }
   | { type: 'poll:started'; delta: PollStartedDelta }
   | { type: 'poll:stopped'; delta: PollStoppedDelta }
-  | { type: 'poll:reacted'; delta: PollReactedDelta }
-  | { type: 'poll:requested'; delta: PollRequestedDelta }
-  | { type: 'poll:requestRemoved'; delta: PollRequestRemovedDelta };
+  | { type: 'poll:reacted'; delta: PollReactedDelta };
 
 /**
  * Merge any newly-introduced user records carried by a delta into the
@@ -271,20 +269,23 @@ function applyDeltaInner(meeting: MeetingState, action: MeetingDeltaAction): Mee
       return { ...meeting, poll: undefined };
     case 'poll:reacted':
       return meeting.poll ? { ...meeting, poll: { ...meeting.poll, reactions: action.delta.reactions } } : meeting;
-    case 'poll:requested': {
-      // One pending request per user: a newer request from the same
-      // requester replaces their earlier one (mirrors the server rule).
-      const request = action.delta.request;
-      const others = (meeting.pollRequests ?? []).filter((r) => r.requesterId !== request.requesterId);
-      return withPollRequests({ ...meeting, users: mergeUsers(meeting.users, action.delta.users) }, [
-        ...others,
-        request,
-      ]);
-    }
-    case 'poll:requestRemoved':
-      return withPollRequests(
-        meeting,
-        (meeting.pollRequests ?? []).filter((r) => r.id !== action.delta.id),
-      );
   }
+}
+
+/**
+ * Apply an (unversioned) `poll:requested` event: one pending request per
+ * requester, so a newer request replaces that user's earlier one. Mirrors
+ * `MeetingManager.requestPoll`.
+ */
+export function applyPollRequested(meeting: MeetingState, event: PollRequestedEvent): MeetingState {
+  const others = (meeting.pollRequests ?? []).filter((r) => r.requesterId !== event.request.requesterId);
+  return withPollRequests({ ...meeting, users: mergeUsers(meeting.users, event.users) }, [...others, event.request]);
+}
+
+/** Apply an (unversioned) `poll:requestRemoved` event. */
+export function applyPollRequestRemoved(meeting: MeetingState, event: PollRequestRemovedEvent): MeetingState {
+  return withPollRequests(
+    meeting,
+    (meeting.pollRequests ?? []).filter((r) => r.id !== event.id),
+  );
 }

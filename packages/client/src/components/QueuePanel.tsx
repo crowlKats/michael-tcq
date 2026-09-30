@@ -212,6 +212,11 @@ export function QueuePanel({
 
   // Debounce + cooldown for Approve / Dismiss / Withdraw (see the hook).
   const requestGuard = usePollRequestGuard();
+  // The Poll Requests section sits above the speaker and queue controls,
+  // so when someone else changes it everything below shifts. Lock the
+  // sensitive controls down there (Next Speaker, queue entry Edit/Delete/
+  // drag) for the same brief cooldown so a chair can't hit the wrong one.
+  const layoutLocked = requestGuard.coolingDown;
 
   // Whether the "advance agenda item" confirmation modal is open
   const [showAdvanceConfirm, setShowAdvanceConfirm] = useState(false);
@@ -658,10 +663,10 @@ export function QueuePanel({
           {isChair && (currentSpeaker || queuedSpeakers.length > 0) && (
             <button
               onClick={() => handleNextSpeaker()}
-              disabled={nextSpeakerDisabled}
+              disabled={nextSpeakerDisabled || layoutLocked}
               className={`text-xs border border-stone-300 dark:border-stone-600 rounded px-2 py-0.5
                          transition-colors presentation-hidden ${
-                           nextSpeakerDisabled
+                           nextSpeakerDisabled || layoutLocked
                              ? 'opacity-50 cursor-not-allowed text-stone-600 dark:text-stone-300'
                              : 'text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer'
                          }`}
@@ -805,6 +810,7 @@ export function QueuePanel({
                       canDrag={d.canDrag}
                       legalTypes={d.legalTypes}
                       onDelete={handleRemoveEntry}
+                      actionsLocked={layoutLocked}
                       initialEditing={autoEditEntryId === entry.id}
                       onEditingStarted={onAutoEditConsumed}
                     />
@@ -943,7 +949,7 @@ export function QueuePanel({
               notice={
                 reviewRevision
                   ? {
-                      text: 'The requester has revised this request since you opened it.',
+                      text: 'The requester has revised this request.',
                       actionLabel: 'Load revision',
                       onAction: () => setReview(reviewRevision),
                     }
@@ -955,9 +961,9 @@ export function QueuePanel({
               // knows its id, and the chair hasn't read the revision.
               submitDisabledReason={
                 reviewRevision
-                  ? 'Load the revision to continue.'
+                  ? 'Load the revision to approve it'
                   : isChair && meeting.poll
-                    ? 'Stop the running poll before approving another.'
+                    ? 'Stop the running poll first'
                     : requestGuard.coolingDown
                       ? POLL_REQUEST_COOLDOWN_REASON
                       : undefined
@@ -1023,6 +1029,12 @@ interface SortableQueueEntryProps extends QueueEntryDerivations {
   index: number;
   isChair: boolean;
   onDelete: (id: string) => void;
+  /**
+   * Temporarily disables Edit, Delete and dragging (without hiding them,
+   * so the layout doesn't shift further) — set during the cooldown after
+   * the Poll Requests section above changed.
+   */
+  actionsLocked?: boolean;
   /** When true, the entry renders in edit mode immediately. */
   initialEditing?: boolean;
   /** Called when the initial editing state has been consumed. */
@@ -1039,6 +1051,7 @@ const SortableQueueEntry = memo(function SortableQueueEntry({
   canDrag,
   legalTypes,
   onDelete,
+  actionsLocked = false,
   initialEditing = false,
   onEditingStarted,
 }: SortableQueueEntryProps) {
@@ -1112,7 +1125,7 @@ const SortableQueueEntry = memo(function SortableQueueEntry({
     // the in-progress form state survives because the component is keyed by
     // entry.id in the parent list. The position/ownership rules in canDrag
     // still apply unchanged.
-    disabled: !canDrag,
+    disabled: !canDrag || actionsLocked,
   });
 
   const style = {
@@ -1333,8 +1346,9 @@ const SortableQueueEntry = memo(function SortableQueueEntry({
             {canEdit && (
               <button
                 onClick={startEditing}
-                className="text-xs text-stone-600 dark:text-stone-300 hover:text-teal-600 dark:hover:text-teal-400
-                           transition-colors cursor-pointer"
+                disabled={actionsLocked}
+                className="text-xs text-stone-600 dark:text-stone-300 enabled:hover:text-teal-600 dark:enabled:hover:text-teal-400
+                           transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 aria-label={`Edit entry: ${entry.topic}`}
               >
                 Edit
@@ -1343,8 +1357,9 @@ const SortableQueueEntry = memo(function SortableQueueEntry({
             {canDelete && (
               <button
                 onClick={() => onDelete(entry.id)}
-                className="text-xs text-stone-600 dark:text-stone-300 hover:text-red-600 dark:hover:text-red-400
-                           transition-colors cursor-pointer"
+                disabled={actionsLocked}
+                className="text-xs text-stone-600 dark:text-stone-300 enabled:hover:text-red-600 dark:enabled:hover:text-red-400
+                           transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 aria-label={`Delete entry: ${entry.topic}`}
               >
                 Delete

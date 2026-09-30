@@ -202,8 +202,8 @@ export function emitFullState(
   const meeting = meetingManager.get(meetingId);
   if (meeting) {
     if (meeting.pollRequests && meeting.pollRequests.length > 0) {
-      // Pending poll requests make the snapshot viewer-specific (their
-      // content is redacted for non-chairs), so emit per socket.
+      // Pending poll requests make the snapshot viewer-specific (only
+      // chairs and each requester see them), so emit per socket.
       for (const s of roomSockets(io, meetingId)) {
         s.emit('state', decorateMeetingForClient(meeting, appSettings, getSocketUser(s)));
       }
@@ -273,9 +273,7 @@ type DeltaEventName =
   | 'agenda:advanced'
   | 'poll:started'
   | 'poll:stopped'
-  | 'poll:reacted'
-  | 'poll:requested'
-  | 'poll:requestRemoved';
+  | 'poll:reacted';
 
 type DeltaEventPayload<E extends DeltaEventName> = Parameters<ServerToClientEvents[E]>[0];
 
@@ -333,34 +331,23 @@ function decorateMeetingForClient(
   }
   const decorated = { ...meeting, users: decoratedUsers };
   if (!meeting.pollRequests) return decorated;
-  return { ...decorated, pollRequests: meeting.pollRequests.map((r) => redactPollRequestFor(r, meeting, viewer)) };
+  // Pending poll requests are only for chairs and their own requester.
+  // Drop the rest entirely (not a stub): even knowing that someone has a
+  // pending request, and when, would be usable as a side channel.
+  const visible = meeting.pollRequests.filter((r) => canSeePollRequest(r, meeting, viewer));
+  if (visible.length > 0) return { ...decorated, pollRequests: visible };
+  delete decorated.pollRequests;
+  return decorated;
 }
 
 /**
- * Whether `viewer` may see the content (topic + options) of pending poll
- * request `r`: chairs and the requester themselves. Everyone else gets a
- * content-free stub — see `redactPollRequestFor`.
+ * Whether `viewer` may see pending poll request `r` at all: chairs see
+ * every request, a participant sees only their own.
  */
 function canSeePollRequest(r: PollRequest, meeting: MeetingState, viewer: SessionUser | undefined): boolean {
   if (!viewer) return false;
   const key = userKey(viewer);
   return r.requesterId === key || meeting.chairIds.includes(key);
-}
-
-/**
- * Redact a pending poll request for a viewer who isn't allowed to see it.
- * Pending requests ride on the versioned delta stream, so non-chairs must
- * still receive *something* under each version number to stay contiguous
- * — but the proposed topic and options are only for chairs and the
- * requester. Otherwise the request list would be a covert message channel
- * between participants (nothing in the UI shows other people's requests
- * to non-chairs, but the wire payload would). The stub keeps the id,
- * requester and timestamp so the client reducer's per-requester
- * replacement and by-id removal still work.
- */
-function redactPollRequestFor(r: PollRequest, meeting: MeetingState, viewer: SessionUser | undefined): PollRequest {
-  if (canSeePollRequest(r, meeting, viewer)) return r;
-  return { id: r.id, requesterId: r.requesterId, requestedAt: r.requestedAt, multiSelect: true, options: [] };
 }
 
 /**
@@ -381,24 +368,21 @@ function roomSockets(io: Server<ClientToServerEvents, ServerToClientEvents>, mee
 }
 
 /**
- * Like `emitDelta`, but the payload is computed per recipient socket so
- * viewer-specific redaction can apply. The version is bumped exactly once
- * and stamped on every copy, so the stream stays contiguous for everyone.
- * Enumerates the room synchronously (no `fetchSockets` await) so no other
- * delta can interleave between the bump and the emits.
+ * Send an unversioned poll-request event (`poll:requested` /
+ * `poll:requestRemoved`) to exactly the sockets allowed to see `request`:
+ * the meeting's chairs and the requester. Everyone else receives nothing.
  */
-function emitDeltaPerSocket<E extends DeltaEventName>(
+function emitToPollRequestAudience<E extends 'poll:requested' | 'poll:requestRemoved'>(
   io: Server<ClientToServerEvents, ServerToClientEvents>,
-  meetingManager: MeetingManager,
-  meetingId: string,
+  meeting: MeetingState,
+  request: PollRequest,
   event: E,
-  payloadFor: (viewer: SessionUser | undefined) => Omit<DeltaEventPayload<E>, 'version'>,
+  payload: Parameters<ServerToClientEvents[E]>[0],
 ): void {
-  const version = meetingManager.bumpVersion(meetingId);
-  if (version === null) return;
-  for (const s of roomSockets(io, meetingId)) {
+  for (const s of roomSockets(io, meeting.id)) {
+    if (!canSeePollRequest(request, meeting, getSocketUser(s))) continue;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (s.emit as (event: E, payload: any) => void)(event, { ...payloadFor(getSocketUser(s)), version });
+    (s.emit as (event: E, payload: any) => void)(event, payload);
   }
 }
 
@@ -631,9 +615,9 @@ export function registerSocketHandlers(
         chairIds: updated.chairIds,
         users: usersRecordFor(chairs, appSettings),
       });
-      // Anyone whose chair status just changed sees pending poll requests
-      // differently (full content for chairs, stubs for everyone else), so
-      // re-send them a fresh, correctly redacted snapshot.
+      // Anyone whose chair status just changed now sees a different set of
+      // pending poll requests (all of them as a chair, only their own
+      // otherwise), so re-send them a fresh, correctly filtered snapshot.
       const chairsAfter = new Set(updated.chairIds);
       for (const s of roomSockets(io, joinedMeetingId)) {
         const viewer = getSocketUser(s);
@@ -1494,15 +1478,12 @@ export function registerSocketHandlers(
 
       const meeting = meetingManager.get(joinedMeetingId);
       if (!meeting) return;
-      // Per recipient: chairs and the requester get the full request; other
-      // participants get a content-free stub (see `redactPollRequestFor`).
-      // Carry the requester's User record so every client can render
-      // their badge on the request row immediately.
-      const users = { [request.requesterId]: meeting.users[request.requesterId] };
-      emitDeltaPerSocket(io, meetingManager, joinedMeetingId, 'poll:requested', (viewer) => ({
-        request: redactPollRequestFor(request, meeting, viewer),
-        users,
-      }));
+      // Chairs and the requester only. Carry the requester's User record so
+      // chairs can render their badge on the request row immediately.
+      emitToPollRequestAudience(io, meeting, request, 'poll:requested', {
+        request,
+        users: usersRecordFor([meeting.users[request.requesterId]], appSettings),
+      });
     });
 
     // --- poll:approveRequest ---
@@ -1574,7 +1555,9 @@ export function registerSocketHandlers(
       }
 
       if (!meetingManager.removePollRequest(joinedMeetingId, request.id)) return;
-      emitDelta(io, meetingManager, joinedMeetingId, 'poll:requestRemoved', { id: request.id });
+      const meeting = meetingManager.get(joinedMeetingId);
+      if (!meeting) return;
+      emitToPollRequestAudience(io, meeting, request, 'poll:requestRemoved', { id: request.id });
     });
 
     // --- meeting:nextAgendaItem ---

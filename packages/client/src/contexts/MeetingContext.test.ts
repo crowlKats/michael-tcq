@@ -210,35 +210,36 @@ describe('meetingReducer', () => {
       requestedAt: '2026-01-01T00:00:00.000Z',
     });
 
-    it('poll:requested appends a request and bumps lastSeenVersion', () => {
-      const state = makeState({ meeting: makeMeeting(), lastSeenVersion: 0 });
+    it('pollRequested appends a request, merges users, and leaves lastSeenVersion alone', () => {
+      const state = makeState({ meeting: makeMeeting(), lastSeenVersion: 7 });
       const next = meetingReducer(state, {
-        type: 'poll:requested',
-        delta: { version: 1, request: request('r1', 'github:bob'), users: { 'github:alice': alice } },
+        type: 'pollRequested',
+        event: { request: request('r1', 'github:bob'), users: { 'github:alice': alice } },
       });
       expect(next.meeting?.pollRequests?.map((r) => r.id)).toEqual(['r1']);
-      // Piggy-backed user records are merged into the local cache.
       expect(next.meeting?.users['github:alice']).toEqual(alice);
-      expect(next.lastSeenVersion).toBe(1);
+      // Unversioned: only chairs and the requester receive these events.
+      expect(next.lastSeenVersion).toBe(7);
+      expect(next.meeting?.operational.version).toBe(state.meeting!.operational.version);
     });
 
-    it('poll:requested replaces an earlier request from the same requester', () => {
+    it('pollRequested replaces an earlier request from the same requester', () => {
       const meeting = makeMeeting({ pollRequests: [request('r1', 'github:bob'), request('r2', 'github:carol')] });
       const next = meetingReducer(makeState({ meeting, lastSeenVersion: 0 }), {
-        type: 'poll:requested',
-        delta: { version: 1, request: request('r3', 'github:bob') },
+        type: 'pollRequested',
+        event: { request: request('r3', 'github:bob') },
       });
       expect(next.meeting?.pollRequests?.map((r) => r.id)).toEqual(['r2', 'r3']);
     });
 
-    it('poll:requestRemoved drops the request and the key once empty', () => {
+    it('pollRequestRemoved drops the request and the key once empty', () => {
       const meeting = makeMeeting({ pollRequests: [request('r1', 'github:bob')] });
-      const next = meetingReducer(makeState({ meeting, lastSeenVersion: 0 }), {
-        type: 'poll:requestRemoved',
-        delta: { version: 1, id: 'r1' },
+      const next = meetingReducer(makeState({ meeting, lastSeenVersion: 3 }), {
+        type: 'pollRequestRemoved',
+        event: { id: 'r1' },
       });
-      expect(next.meeting).toBeDefined();
       expect('pollRequests' in next.meeting!).toBe(false);
+      expect(next.lastSeenVersion).toBe(3);
     });
 
     it('poll:started with requestId consumes that request only', () => {

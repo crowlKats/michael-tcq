@@ -77,8 +77,8 @@ export type {
   PollStartedDelta,
   PollStoppedDelta,
   PollReactedDelta,
-  PollRequestedDelta,
-  PollRequestRemovedDelta,
+  PollRequestedEvent,
+  PollRequestRemovedEvent,
 } from './messages.js';
 
 export {
@@ -148,7 +148,7 @@ export {
   upgradeLog,
 } from './migrate.js';
 export type { LegacyUser } from './migrate.js';
-export { applyDelta } from './applyDelta.js';
+export { applyDelta, applyPollRequested, applyPollRequestRemoved } from './applyDelta.js';
 export type { MeetingDeltaAction } from './applyDelta.js';
 export { DEV_USERS } from './devUsers.js';
 export type { DevUser } from './devUsers.js';

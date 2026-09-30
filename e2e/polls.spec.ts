@@ -7,6 +7,7 @@ import {
   addAgendaItem,
   startMeeting,
   openSecondContext,
+  addQueueEntry,
 } from './helpers.js';
 
 import { installClipboardMock, getClipboard } from './mocks.js';
@@ -589,7 +590,7 @@ test.describe('Poll requests', () => {
     }
   });
 
-  test("other participants never receive the content of someone else's request", async ({ browser, page }) => {
+  test("other participants never receive someone else's request", async ({ browser, page }) => {
     await setupStartedMeeting(page);
     const bob = await openSecondContext(browser, meetingIdOf(page), { asUser: 'bob' });
     const carol = await openSecondContext(browser, meetingIdOf(page), { asUser: 'carol' });
@@ -609,6 +610,26 @@ test.describe('Poll requests', () => {
     } finally {
       await bob.context.close();
       await carol.context.close();
+    }
+  });
+
+  test("a new request briefly locks the chair's queue controls that it shifts", async ({ browser, page }) => {
+    await setupStartedMeeting(page);
+    await addQueueEntry(page, 'New Topic', 'Topic the chair might delete');
+    const del = page.getByRole('button', { name: 'Delete entry: Topic the chair might delete' });
+    await expect(del).toBeEnabled();
+
+    const second = await openSecondContext(browser, meetingIdOf(page), { asUser: 'bob' });
+    try {
+      await goToQueueTab(second.page);
+      await requestPollAs(second.page, 'Arrives mid-click');
+
+      await expect(page.getByRole('region', { name: 'Poll Requests' })).toBeVisible();
+      await expect(del).toBeDisabled();
+      // …and re-enables after the brief cooldown.
+      await expect(del).toBeEnabled({ timeout: 5000 });
+    } finally {
+      await second.context.close();
     }
   });
 
